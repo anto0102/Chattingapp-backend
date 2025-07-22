@@ -102,6 +102,14 @@ function getClientIP(socket) {
 let connectedUsers = {};
 let waitingUser = null;
 
+// Funzione per inviare il conteggio degli utenti online a TUTTI i client
+function emitOnlineCount() {
+  // Filtra solo gli utenti NON-admin per il conteggio pubblico
+  const currentOnlineUsers = Object.values(connectedUsers).filter(u => !u.isAdmin).length;
+  io.emit('online_count', currentOnlineUsers);
+  console.log(`Aggiornato conteggio online: ${currentOnlineUsers}`);
+}
+
 // Middleware: blocca IP bannati
 io.use((socket, next) => {
   const ip = getClientIP(socket);
@@ -117,7 +125,10 @@ io.on("connection", (socket) => {
   connectedUsers[socket.id] = { socket, ip, isAdmin };
 
   console.log(`${isAdmin ? "🛡️ Admin" : "✅ Utente"} connesso: ${socket.id} (${ip})`);
-  updateAdminUI();
+  
+  // AGGIUNTO: Emetti il conteggio online ogni volta che qualcuno si connette
+  emitOnlineCount(); 
+  updateAdminUI(); // Mantiene l'aggiornamento dell'UI admin
 
   if (!isAdmin) {
     socket.on("start_chat", () => {
@@ -140,10 +151,18 @@ io.on("connection", (socket) => {
     });
 
     socket.on("message", (msg) => {
-      if (socket.partner) socket.partner.emit("message", msg);
+      // Controlla anche se il partner esiste e non è null prima di emettere
+      if (socket.partner && socket.partner.connected) { 
+          socket.partner.emit("message", msg);
+      } else {
+          // Se il partner non esiste o si è disconnesso, notifica l'utente
+          socket.emit("partner_disconnected");
+          socket.partner = null; // pulisci il riferimento
+      }
     });
 
     socket.on("disconnect_chat", () => {
+      // Aggiunto controllo per evitare errori se socket.partner è già null
       if (socket.partner) {
         socket.partner.emit("partner_disconnected");
         socket.partner.partner = null;
@@ -164,6 +183,28 @@ io.on("connection", (socket) => {
       reports.push(report);
       saveReports();
       console.log(`📣 Segnalazione ricevuta da ${ip} contro ${partnerIp}`);
+
+      // AGGIUNTO: Se l'utente segnalato è ancora connesso, disconnettilo
+      // Trova il socket del partner segnalato
+      const reportedSocket = Object.values(connectedUsers).find(
+        (u) => !u.isAdmin && u.ip === partnerIp && u.socket.partner?.id === socket.id
+      )?.socket;
+
+      if (reportedSocket) {
+        // Disconnetti solo il socket che è stato segnalato
+        reportedSocket.emit("banned"); // Puoi usare un evento più specifico come 'reported_disconnected'
+        reportedSocket.disconnect(true);
+        console.log(`🚨 Utente segnalato disconnesso: ${partnerIp}`);
+      }
+      // AGGIUNTO: Disconnetti anche il reporter come già facevi sul frontend
+      if (socket.partner) { // Disconnetti il partner attuale (che può essere quello segnalato)
+        socket.partner.emit("partner_disconnected");
+        socket.partner.partner = null;
+        socket.partner = null;
+      }
+      if (waitingUser === socket) waitingUser = null;
+      socket.disconnect(true); // Disconnetti il reporter
+      console.log(` REPORTER DISCONNECTED ${ip}`)
     });
   }
 
@@ -178,12 +219,14 @@ io.on("connection", (socket) => {
 
       Object.values(connectedUsers).forEach(({ socket: s, ip }) => {
         if (ip === targetIP) {
-          s.emit("banned");
-          s.disconnect(true);
+          s.emit("banned"); // Evento per notificare il client che è stato bannato
+          s.disconnect(true); // Forza la disconnessione del client bannato
         }
       });
 
       updateAdminUI();
+      // AGGIUNTO: Aggiorna il conteggio online dopo un ban, perché un utente normale potrebbe essere stato disconnesso
+      emitOnlineCount(); 
     }
   });
 
@@ -200,13 +243,24 @@ io.on("connection", (socket) => {
   });
 
   socket.on("disconnect", () => {
+    // Prima di eliminare il socket, controlla se era in una chat attiva
+    if (connectedUsers[socket.id] && connectedUsers[socket.id].socket.partner) {
+      const partnerSocket = connectedUsers[socket.id].socket.partner;
+      if (partnerSocket.connected) { // Assicurati che il partner sia ancora connesso
+        partnerSocket.emit("partner_disconnected");
+        partnerSocket.partner = null; // Rimuovi il riferimento al partner disconnesso
+      }
+    }
+
     delete connectedUsers[socket.id];
     if (waitingUser === socket) waitingUser = null;
     updateAdminUI();
+    // AGGIUNTO: Emetti il conteggio online ogni volta che qualcuno si disconnette
+    emitOnlineCount(); 
   });
 });
 
-// Aggiorna UI admin
+// Aggiorna UI admin (invia la lista di utenti e bannati agli admin)
 function updateAdminUI() {
   const users = Object.values(connectedUsers)
     .filter((u) => !u.isAdmin)
@@ -217,12 +271,15 @@ function updateAdminUI() {
   Object.values(connectedUsers)
     .filter((u) => u.isAdmin)
     .forEach(({ socket }) => {
-      socket.emit("users_list", users);
-      socket.emit("banned_list", banned);
+      socket.emit("users_list", users); // Questo evento è per l'UI admin
+      socket.emit("banned_list", banned); // Questo evento è per l'UI admin
     });
+    // L'emissione di online_count a tutti i client avviene tramite emitOnlineCount()
 }
 
 const PORT = process.env.PORT || 10000;
 server.listen(PORT, () => {
   console.log(`🚀 Server avviato sulla porta ${PORT}`);
+  // AGGIUNTO: Emetti il conteggio iniziale all'avvio del server
+  emitOnlineCount(); 
 });
