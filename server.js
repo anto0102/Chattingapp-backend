@@ -52,12 +52,11 @@ try {
   bannedIPs = new Set();
 }
 
-// Funzione per normalizzare IP
+// Funzione per normalizzare IP, ora anche ::1 -> 127.0.0.1
 function normalizeIP(ip) {
-  if (!ip) return ip;
-  if (ip.startsWith("::ffff:")) {
-    return ip.split("::ffff:")[1];
-  }
+  if (!ip) return "";
+  if (ip === "::1") return "127.0.0.1"; // localhost IPv6 convertito a IPv4
+  if (ip.startsWith("::ffff:")) return ip.substring(7);
   return ip;
 }
 
@@ -151,7 +150,6 @@ io.on("connection", (socket) => {
     if (waitingUser === socket) waitingUser = null;
   });
 
-  // BAN IP
   socket.on("ban_ip", (ipToBan) => {
     if (!connectedUsers[socket.id]?.isAdmin) {
       console.log("Utente non admin ha tentato di bannare IP");
@@ -159,7 +157,7 @@ io.on("connection", (socket) => {
     }
 
     ipToBan = normalizeIP(ipToBan);
-    console.log(`Tentativo di ban IP: ${ipToBan}`);
+    console.log(`Comando ban_ip ricevuto per IP: "${ipToBan}"`);
 
     if (!bannedIPs.has(ipToBan)) {
       bannedIPs.add(ipToBan);
@@ -168,7 +166,7 @@ io.on("connection", (socket) => {
       // Disconnetti utenti bannati
       Object.values(connectedUsers).forEach(({ ip, socket: s }) => {
         if (ip === ipToBan) {
-          console.log(`Disconnessione utente con IP bannato: ${ip}`);
+          console.log(`Disconnetto utente con IP bannato: ${ip}`);
           s.emit("banned");
           s.disconnect(true);
         }
@@ -181,14 +179,11 @@ io.on("connection", (socket) => {
     }
   });
 
-  // UNBAN IP
   socket.on("unban_ip", (ipToUnban) => {
-    if (!connectedUsers[socket.id]?.isAdmin) {
-      console.log("Utente non admin ha tentato di sbannare IP");
-      return;
-    }
+    if (!connectedUsers[socket.id]?.isAdmin) return;
 
     ipToUnban = normalizeIP(ipToUnban);
+
     if (bannedIPs.has(ipToUnban)) {
       bannedIPs.delete(ipToUnban);
       saveBannedIPs();
