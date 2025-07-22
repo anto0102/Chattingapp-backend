@@ -12,22 +12,25 @@ const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
     origin: "*",
-    methods: ["GET", "POST"]
-  }
+    methods: ["GET", "POST"],
+  },
 });
 
-// ✅ Variabile globale per il matchmaking
+// Variabile globale per il matchmaking
 let waitingUser = null;
 
 const ADMIN_USERNAME = "admin";
 const ADMIN_PASSWORD = "changeme"; // Cambia la password prima di mettere online
 
 // Basic auth per pagina admin
-app.use("/admin", basicAuth({
-  users: { [ADMIN_USERNAME]: ADMIN_PASSWORD },
-  challenge: true,
-  unauthorizedResponse: () => "Accesso negato"
-}));
+app.use(
+  "/admin",
+  basicAuth({
+    users: { [ADMIN_USERNAME]: ADMIN_PASSWORD },
+    challenge: true,
+    unauthorizedResponse: () => "Accesso negato",
+  })
+);
 
 // Serve pagina admin statica
 app.get("/admin", (req, res) => {
@@ -40,23 +43,23 @@ const bannedIPs = new Set();
 // Utenti connessi: socketId => { ip, socket, isAdmin }
 const connectedUsers = {};
 
-// 🔄 Invia la lista utenti attivi agli admin
+// Invia la lista utenti attivi agli admin
 function updateAdminUsers() {
   const usersList = Object.values(connectedUsers)
-    .filter(u => !u.isAdmin)
-    .map(u => ({
+    .filter((u) => !u.isAdmin)
+    .map((u) => ({
       socketId: u.socket.id,
-      ip: u.ip
+      ip: u.ip,
     }));
 
   const adminSockets = Object.values(connectedUsers)
-    .filter(u => u.isAdmin)
-    .map(u => u.socket);
+    .filter((u) => u.isAdmin)
+    .map((u) => u.socket);
 
-  adminSockets.forEach(admin => admin.emit("users_list", usersList));
+  adminSockets.forEach((admin) => admin.emit("users_list", usersList));
 }
 
-// ❌ Blocco degli IP bannati
+// Blocca gli IP bannati
 io.use((socket, next) => {
   const ip = socket.handshake.address;
   if (bannedIPs.has(ip)) {
@@ -65,7 +68,7 @@ io.use((socket, next) => {
   next();
 });
 
-// 🔌 Connessione socket
+// Connessione socket
 io.on("connection", (socket) => {
   const ip = socket.handshake.address;
   const isAdmin = socket.handshake.query && socket.handshake.query.admin === "1";
