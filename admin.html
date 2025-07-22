@@ -2,117 +2,82 @@
 <html lang="it">
 <head>
   <meta charset="UTF-8" />
-  <title>Admin Chat - Gestione Utenti</title>
+  <title>Admin Panel</title>
   <style>
-    body {
-      font-family: Arial, sans-serif;
-      margin: 2rem;
-      background: #f0f0f0;
-    }
-    h1 {
-      margin-bottom: 1rem;
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      margin-bottom: 2rem;
-    }
-    th, td {
-      padding: 0.5rem;
-      border: 1px solid #ccc;
-      text-align: left;
-    }
-    button {
-      padding: 0.3rem 0.6rem;
-      background-color: #dc2626;
-      color: white;
-      border: none;
-      border-radius: 4px;
-      cursor: pointer;
-    }
-    button:hover {
-      background-color: #b91c1c;
-    }
-    .unban-btn {
-      background-color: #2563eb;
-    }
-    .unban-btn:hover {
-      background-color: #1d4ed8;
-    }
+    body { font-family: Arial, sans-serif; padding: 20px; }
+    h2 { margin-top: 30px; }
+    ul { list-style-type: none; padding: 0; }
+    li { margin: 5px 0; }
+    button { margin-left: 10px; }
   </style>
 </head>
 <body>
-  <h1>👥 Utenti connessi</h1>
-  <table>
-    <thead>
-      <tr>
-        <th>Socket ID</th>
-        <th>IP</th>
-        <th>Azione</th>
-      </tr>
-    </thead>
-    <tbody id="usersTableBody"></tbody>
-  </table>
+  <h1>Admin Panel</h1>
 
-  <h1>🚫 Utenti bannati</h1>
-  <table>
-    <thead>
-      <tr>
-        <th>IP</th>
-        <th>Azione</th>
-      </tr>
-    </thead>
-    <tbody id="bannedTableBody"></tbody>
-  </table>
+  <h2>Utenti Connessi</h2>
+  <ul id="usersList"></ul>
 
-  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  <h2>IP Bannati</h2>
+  <ul id="bannedList"></ul>
+
+  <script src="/socket.io/socket.io.js"></script>
   <script>
-    const socket = io({
-      query: { admin: "1" },
-      transports: ["websocket"]
-    });
+    const socket = io("/", { query: { admin: "1" } });
 
-    const usersTableBody = document.getElementById("usersTableBody");
-    const bannedTableBody = document.getElementById("bannedTableBody");
+    const usersListEl = document.getElementById("usersList");
+    const bannedListEl = document.getElementById("bannedList");
 
+    // Aggiorna lista utenti
     socket.on("users_list", (users) => {
-      usersTableBody.innerHTML = "";
+      usersListEl.innerHTML = "";
       users.forEach(({ socketId, ip }) => {
-        const row = document.createElement("tr");
+        const li = document.createElement("li");
+        li.textContent = `${ip} (Socket: ${socketId})`;
 
-        row.innerHTML = `
-          <td>${socketId}</td>
-          <td>${ip}</td>
-          <td><button onclick="banIP('${ip}')">Banna</button></td>
-        `;
-        usersTableBody.appendChild(row);
+        // Pulsante ban
+        const banBtn = document.createElement("button");
+        banBtn.textContent = "Banna";
+        banBtn.onclick = () => {
+          if (confirm(`Sei sicuro di bannare l'IP ${ip}?`)) {
+            socket.emit("ban_ip", ip);
+          }
+        };
+
+        li.appendChild(banBtn);
+        usersListEl.appendChild(li);
       });
     });
 
-    socket.on("banned_list", (ips) => {
-      bannedTableBody.innerHTML = "";
-      ips.forEach(ip => {
-        const row = document.createElement("tr");
+    // Aggiorna lista IP bannati
+    socket.on("banned_list", (bannedIPs) => {
+      bannedListEl.innerHTML = "";
+      bannedIPs.forEach((ip) => {
+        const li = document.createElement("li");
+        li.textContent = ip;
 
-        row.innerHTML = `
-          <td>${ip}</td>
-          <td><button class="unban-btn" onclick="unbanIP('${ip}')">Sblocca</button></td>
-        `;
-        bannedTableBody.appendChild(row);
+        // Pulsante unban
+        const unbanBtn = document.createElement("button");
+        unbanBtn.textContent = "Sbanna";
+        unbanBtn.onclick = () => {
+          if (confirm(`Sei sicuro di sbannare l'IP ${ip}?`)) {
+            socket.emit("unban_ip", ip);
+          }
+        };
+
+        li.appendChild(unbanBtn);
+        bannedListEl.appendChild(li);
       });
     });
 
-    function banIP(ip) {
-      if (confirm(`Sei sicuro di voler bannare l'IP ${ip}?`)) {
-        socket.emit("ban_ip", ip);
-      }
-    }
+    // Messaggi di errore o ban ricevuti
+    socket.on("banned", () => {
+      alert("Sei stato bannato dal server.");
+      socket.disconnect();
+    });
 
-    function unbanIP(ip) {
-      if (confirm(`Sbloccare l'IP ${ip}?`)) {
-        socket.emit("unban_ip", ip);
-      }
-    }
+    socket.on("connect_error", (err) => {
+      alert("Connessione fallita: " + err.message);
+    });
   </script>
 </body>
 </html>
