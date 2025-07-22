@@ -198,3 +198,46 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`🚀 Server avviato sulla porta ${PORT}`);
 });
+// ... tutto come prima fino a qui ...
+
+function saveBannedIPs() {
+  console.log("Salvataggio banned-ips.json con IP:", Array.from(bannedIPs));
+  fs.writeFile(BANNED_IPS_FILE, JSON.stringify(Array.from(bannedIPs), null, 2), (err) => {
+    if (err) {
+      console.error("Errore salvando banned-ips.json:", err);
+    } else {
+      console.log("File banned-ips.json aggiornato correttamente.");
+    }
+  });
+}
+
+// ... tutto come prima fino a qui ...
+
+socket.on("ban_ip", (ipToBan) => {
+  if (!connectedUsers[socket.id]?.isAdmin) {
+    console.log("Utente non admin ha tentato di bannare IP");
+    return;
+  }
+
+  ipToBan = normalizeIP(ipToBan);
+  console.log(`Tentativo di ban IP: ${ipToBan}`);
+
+  if (!bannedIPs.has(ipToBan)) {
+    bannedIPs.add(ipToBan);
+    saveBannedIPs();
+
+    // Disconnetti utenti bannati
+    Object.values(connectedUsers).forEach(({ ip, socket: s }) => {
+      if (ip === ipToBan) {
+        console.log(`Disconnessione utente con IP bannato: ${ip}`);
+        s.emit("banned");
+        s.disconnect(true);
+      }
+    });
+
+    console.log(`⛔ IP bannato: ${ipToBan}`);
+    updateAdminUsers();
+  } else {
+    console.log(`IP ${ipToBan} è già bannato.`);
+  }
+});
