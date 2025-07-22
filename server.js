@@ -2,6 +2,8 @@ const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
 const cors = require("cors");
+const fs = require("fs");
+const path = require("path");
 const basicAuth = require("express-basic-auth");
 
 const app = express();
@@ -16,13 +18,13 @@ const io = new Server(server, {
   },
 });
 
-// Variabile globale per il matchmaking
+// 🔁 Matchmaking
 let waitingUser = null;
 
+// Auth admin
 const ADMIN_USERNAME = "admin";
-const ADMIN_PASSWORD = "changeme"; // Cambia la password prima di mettere online
+const ADMIN_PASSWORD = "changeme"; // Modifica in produzione
 
-// Basic auth per pagina admin
 app.use(
   "/admin",
   basicAuth({
@@ -32,18 +34,34 @@ app.use(
   })
 );
 
-// Serve pagina admin statica
 app.get("/admin", (req, res) => {
   res.sendFile(__dirname + "/admin.html");
 });
 
-// Lista IP bannati
+// 📁 Percorso file dei ban
+const BANS_FILE = path.join(__dirname, "banned-ips.json");
 const bannedIPs = new Set();
 
-// Utenti connessi: socketId => { ip, socket, isAdmin }
+// 📥 Carica IP bannati da file all'avvio
+if (fs.existsSync(BANS_FILE)) {
+  const data = fs.readFileSync(BANS_FILE, "utf-8");
+  try {
+    const parsed = JSON.parse(data);
+    parsed.forEach(ip => bannedIPs.add(ip));
+    console.log("📂 IP bannati caricati da file:", [...bannedIPs]);
+  } catch (err) {
+    console.error("Errore nel parsing di banned-ips.json", err);
+  }
+}
+
+// 💾 Salva IP bannati su file
+function saveBans() {
+  fs.writeFileSync(BANS_FILE, JSON.stringify([...bannedIPs], null, 2));
+}
+
+// 👥 Utenti connessi
 const connectedUsers = {};
 
-// Invia la lista utenti attivi agli admin
 function updateAdminUsers() {
   const usersList = Object.values(connectedUsers)
     .filter((u) => !u.isAdmin)
@@ -59,7 +77,7 @@ function updateAdminUsers() {
   adminSockets.forEach((admin) => admin.emit("users_list", usersList));
 }
 
-// Blocca gli IP bannati
+// ❌ Blocco IP bannati
 io.use((socket, next) => {
   const ip = socket.handshake.address;
   if (bannedIPs.has(ip)) {
@@ -68,10 +86,10 @@ io.use((socket, next) => {
   next();
 });
 
-// Connessione socket
+// 🔌 Connessione
 io.on("connection", (socket) => {
   const ip = socket.handshake.address;
-  const isAdmin = socket.handshake.query && socket.handshake.query.admin === "1";
+  const isAdmin = socket.handshake.query?.admin === "1";
 
   connectedUsers[socket.id] = { ip, socket, isAdmin };
 
@@ -127,6 +145,7 @@ io.on("connection", (socket) => {
     if (!connectedUsers[socket.id]?.isAdmin) return;
 
     bannedIPs.add(ipToBan);
+    saveBans(); // 🔸 Salva su file
 
     Object.values(connectedUsers).forEach(({ ip, socket: s }) => {
       if (ip === ipToBan) {
@@ -153,6 +172,7 @@ io.on("connection", (socket) => {
   });
 });
 
+// 🚀 Avvio
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`🚀 Server avviato sulla porta ${PORT}`);
