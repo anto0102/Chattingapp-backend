@@ -2,6 +2,7 @@ const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
 const cors = require("cors");
+const basicAuth = require('express-basic-auth');
 
 const app = express();
 app.use(cors());
@@ -10,23 +11,74 @@ const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin: "*", // Cambia con il tuo dominio se vuoi
+    origin: "*",
     methods: ["GET", "POST"]
   }
 });
 
-let waitingUser = null;
+const ADMIN_USERNAME = 'admin';
+const ADMIN_PASSWORD = 'changeme'; // Cambia la password prima di mettere online
 
-// 🔢 Funzione per inviare il numero di utenti connessi
-function broadcastOnlineCount() {
-  io.emit("online_count", io.engine.clientsCount);
+// Middleware Basic Auth per /admin
+app.use('/admin', basicAuth({
+  users: { [ADMIN_USERNAME]: ADMIN_PASSWORD },
+  challenge: true,
+  unauthorizedResponse: (req) => 'Accesso negato'
+}));
+
+// Pagina admin statica semplice (poi puoi fare frontend dedicato)
+app.get('/admin', (req, res) => {
+  res.sendFile(__dirname + '/admin.html');
+});
+
+// Lista nera IP
+const bannedIPs = new Set();
+
+// Utenti connessi { socketId: { ip, socket } }
+const connectedUsers = {};
+
+// Funzione per aggiornare admin con lista utenti attivi
+function updateAdminUsers() {
+  const adminSockets = [];
+  for (const [id, data] of Object.entries(connectedUsers)) {
+    if (data.isAdmin) adminSockets.push(data.socket);
+  }
+  const usersList = Object.values(connectedUsers).map(u => ({
+    socketId: u.socket.id,
+    ip: u.ip,
+  }));
+  adminSockets.forEach(s => s.emit('users_list', usersList));
 }
 
-io.on("connection", (socket) => {
-  console.log("✅ Nuovo utente connesso:", socket.id);
+io.use((socket, next) => {
+  const ip = socket.handshake.address;
 
-  // Invia il numero aggiornato
-  broadcastOnlineCount();
+  // blocca banned
+  if (bannedIPs.has(ip)) {
+    return next(new Error('Sei stato bannato'));
+  }
+
+  next();
+});
+
+io.on("connection", (socket) => {
+  const ip = socket.handshake.address;
+  console.log("✅ Nuovo utente connesso:", socket.id, ip);
+
+  // Rileva se admin (esempio: manda query ?admin=1)
+  if (socket.handshake.query && socket.handshake.query.admin === '1') {
+    console.log(`Admin connesso: ${socket.id}`);
+    connectedUsers[socket.id] = { ip, socket, isAdmin: true };
+    // Invia lista utenti all'admin appena connesso
+    updateAdminUsers();
+    return;
+  }
+
+  // Utente normale
+  connectedUsers[socket.id] = { ip, socket, isAdmin: false };
+
+  // Aggiorna admin su nuovi utenti
+  updateAdminUsers();
 
   socket.on("start_chat", () => {
     if (waitingUser) {
@@ -56,19 +108,6 @@ io.on("connection", (socket) => {
     }
   });
 
-  // Nuovi eventi per typing indicator
-  socket.on("typing", () => {
-    if (socket.partner) {
-      socket.partner.emit("typing");
-    }
-  });
-
-  socket.on("stop_typing", () => {
-    if (socket.partner) {
-      socket.partner.emit("stop_typing");
-    }
-  });
-
   socket.on("disconnect_chat", () => {
     if (socket.partner) {
       socket.partner.emit("partner_disconnected");
@@ -80,6 +119,26 @@ io.on("connection", (socket) => {
     }
   });
 
+  socket.on("ban_ip", (ipToBan) => {
+    // Solo admin può bannare
+    if (!connectedUsers[socket.id] || !connectedUsers[socket.id].isAdmin) {
+      return;
+    }
+
+    bannedIPs.add(ipToBan);
+
+    // Disconnetti utenti bannati se connessi
+    Object.values(connectedUsers).forEach(({ ip, socket: s }) => {
+      if (ip === ipToBan) {
+        s.emit('banned');
+        s.disconnect();
+      }
+    });
+
+    updateAdminUsers();
+    console.log(`IP bannato: ${ipToBan}`);
+  });
+
   socket.on("disconnect", () => {
     console.log("❌ Utente disconnesso:", socket.id);
     if (socket.partner) {
@@ -89,9 +148,8 @@ io.on("connection", (socket) => {
     if (waitingUser === socket) {
       waitingUser = null;
     }
-
-    // Aggiorna il numero di utenti online
-    broadcastOnlineCount();
+    delete connectedUsers[socket.id];
+    updateAdminUsers();
   });
 });
 
