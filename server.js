@@ -125,8 +125,9 @@ io.on("connection", (socket) => {
         const room = `chat_${socket.id}_${waitingUser.id}`;
         socket.join(room);
         waitingUser.join(room);
-        socket.emit("match");
-        waitingUser.emit("match");
+        // INVIA IP PARTNER qui
+        socket.emit("match", { partnerIp: waitingUser.ip });
+        waitingUser.emit("match", { partnerIp: socket.ip });
         socket.partner = waitingUser;
         waitingUser.partner = socket;
         waitingUser = null;
