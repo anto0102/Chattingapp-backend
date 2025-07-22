@@ -18,17 +18,12 @@ const io = new Server(server, {
   },
 });
 
-let waitingUser = null;
-
-const ADMIN_USERNAME = "admin";
-const ADMIN_PASSWORD = "changeme"; // Cambia la password prima di mettere online
-
+// Autenticazione base per /admin
 app.use(
   "/admin",
   basicAuth({
-    users: { [ADMIN_USERNAME]: ADMIN_PASSWORD },
+    users: { admin: "changeme" }, // Cambia password!
     challenge: true,
-    unauthorizedResponse: () => "Accesso negato",
   })
 );
 
@@ -36,172 +31,151 @@ app.get("/admin", (req, res) => {
   res.sendFile(path.join(__dirname, "admin.html"));
 });
 
-const BANNED_IPS_FILE = path.join(__dirname, "banned-ips.json");
+// ──────────────────────────────────────────────────────────
+// ────────────── Gestione IP Bannati ───────────────────────
+// ──────────────────────────────────────────────────────────
 
+const BANNED_IPS_FILE = path.join(__dirname, "banned-ips.json");
 let bannedIPs = new Set();
-try {
-  if (fs.existsSync(BANNED_IPS_FILE)) {
-    const data = fs.readFileSync(BANNED_IPS_FILE, "utf8");
-    const ips = JSON.parse(data);
-    if (Array.isArray(ips)) bannedIPs = new Set(ips);
-  } else {
-    fs.writeFileSync(BANNED_IPS_FILE, JSON.stringify([]));
+
+// Carica IP bannati da file
+if (fs.existsSync(BANNED_IPS_FILE)) {
+  try {
+    const content = fs.readFileSync(BANNED_IPS_FILE, "utf8");
+    const list = JSON.parse(content);
+    if (Array.isArray(list)) bannedIPs = new Set(list);
+  } catch (e) {
+    console.error("Errore lettura banned-ips.json:", e);
   }
-} catch (e) {
-  console.error("Errore caricando banned-ips.json:", e);
-  bannedIPs = new Set();
 }
 
-// Funzione per normalizzare IP
-function normalizeIP(ip) {
-  if (!ip) return ip;
-  if (ip.startsWith("::ffff:")) {
-    return ip.split("::ffff:")[1];
-  }
+// Salva IP bannati nel file
+function saveBannedIPs() {
+  fs.writeFileSync(BANNED_IPS_FILE, JSON.stringify([...bannedIPs], null, 2));
+}
+
+// Ottieni IP reale
+function getClientIP(socket) {
+  const xForwarded = socket.handshake.headers["x-forwarded-for"];
+  let ip = xForwarded ? xForwarded.split(",")[0].trim() : socket.handshake.address;
+  if (ip.startsWith("::ffff:")) ip = ip.replace("::ffff:", "");
   return ip;
 }
 
-// Funzione per ottenere l'IP reale, considerando il proxy
-function getClientIP(socket) {
-  const xForwardedFor = socket.handshake.headers['x-forwarded-for'];
-  if (xForwardedFor) {
-    const ips = xForwardedFor.split(',').map(ip => ip.trim());
-    return normalizeIP(ips[0]);
+// ──────────────────────────────────────────────────────────
+// ────────────── Socket.IO Logica ──────────────────────────
+// ──────────────────────────────────────────────────────────
+
+let connectedUsers = {};
+let waitingUser = null;
+
+// Blocca utenti bannati
+io.use((socket, next) => {
+  const ip = getClientIP(socket);
+  if (bannedIPs.has(ip)) return next(new Error("BANNED"));
+  next();
+});
+
+io.on("connection", (socket) => {
+  const ip = getClientIP(socket);
+  const isAdmin = socket.handshake.query?.admin === "1";
+  connectedUsers[socket.id] = { socket, ip, isAdmin };
+
+  console.log(`${isAdmin ? "🛡️ Admin" : "✅ Utente"} connesso: ${socket.id} (${ip})`);
+  updateAdminUI();
+
+  // Messaggi chat
+  if (!isAdmin) {
+    socket.on("start_chat", () => {
+      if (waitingUser && waitingUser.connected) {
+        const room = `chat_${socket.id}_${waitingUser.id}`;
+        socket.join(room);
+        waitingUser.join(room);
+        socket.emit("match");
+        waitingUser.emit("match");
+        socket.partner = waitingUser;
+        waitingUser.partner = socket;
+        waitingUser = null;
+      } else {
+        waitingUser = socket;
+        socket.emit("waiting");
+      }
+    });
+
+    socket.on("message", (msg) => {
+      if (socket.partner) socket.partner.emit("message", msg);
+    });
+
+    socket.on("disconnect_chat", () => {
+      if (socket.partner) {
+        socket.partner.emit("partner_disconnected");
+        socket.partner.partner = null;
+        socket.partner = null;
+      }
+      if (waitingUser === socket) waitingUser = null;
+    });
   }
-  return normalizeIP(socket.handshake.address);
-}
 
-function saveBannedIPs() {
-  fs.writeFile(BANNED_IPS_FILE, JSON.stringify(Array.from(bannedIPs), null, 2), (err) => {
-    if (err) console.error("Errore salvando banned-ips.json:", err);
+  // Ban IP
+  socket.on("ban_ip", (targetIP) => {
+    if (!connectedUsers[socket.id]?.isAdmin) return;
+
+    if (!bannedIPs.has(targetIP)) {
+      bannedIPs.add(targetIP);
+      saveBannedIPs();
+      console.log(`⛔ IP bannato: ${targetIP}`);
+
+      // Disconnetti gli utenti con quell'IP
+      Object.values(connectedUsers).forEach(({ socket: s, ip }) => {
+        if (ip === targetIP) {
+          s.emit("banned");
+          s.disconnect(true);
+        }
+      });
+
+      updateAdminUI();
+    }
   });
-}
 
-const connectedUsers = {};
+  // Unban IP
+  socket.on("unban_ip", (ipToUnban) => {
+    if (!connectedUsers[socket.id]?.isAdmin) return;
 
-function updateAdminUsers() {
-  const usersList = Object.values(connectedUsers)
+    if (bannedIPs.has(ipToUnban)) {
+      bannedIPs.delete(ipToUnban);
+      saveBannedIPs();
+      console.log(`✅ IP sbannato: ${ipToUnban}`);
+      updateAdminUI();
+    }
+  });
+
+  socket.on("disconnect", () => {
+    delete connectedUsers[socket.id];
+    if (waitingUser === socket) waitingUser = null;
+    updateAdminUI();
+  });
+});
+
+// Aggiorna la lista per tutti gli admin connessi
+function updateAdminUI() {
+  const users = Object.values(connectedUsers)
     .filter((u) => !u.isAdmin)
     .map(({ socket, ip }) => ({
       socketId: socket.id,
       ip,
     }));
 
-  const adminSockets = Object.values(connectedUsers)
-    .filter((u) => u.isAdmin)
-    .map((u) => u.socket);
+  const banned = [...bannedIPs];
 
-  adminSockets.forEach((admin) => {
-    admin.emit("users_list", usersList);
-    admin.emit("banned_list", Array.from(bannedIPs));
-  });
+  Object.values(connectedUsers)
+    .filter((u) => u.isAdmin)
+    .forEach(({ socket }) => {
+      socket.emit("users_list", users);
+      socket.emit("banned_list", banned);
+    });
 }
 
-// Middleware blocco IP bannati con IP normalizzati
-io.use((socket, next) => {
-  let ip = getClientIP(socket);
-  if (bannedIPs.has(ip)) {
-    return next(new Error("Sei stato bannato"));
-  }
-  next();
-});
-
-io.on("connection", (socket) => {
-  let ip = getClientIP(socket);
-  const isAdmin = socket.handshake.query?.admin === "1";
-
-  connectedUsers[socket.id] = { ip, socket, isAdmin };
-
-  console.log(isAdmin ? `🛡️ Admin connesso: ${socket.id}` : `✅ Utente connesso: ${socket.id} (${ip})`);
-
-  updateAdminUsers();
-
-  if (isAdmin) return;
-
-  socket.on("start_chat", () => {
-    if (waitingUser && waitingUser.connected) {
-      const roomId = `${socket.id}#${waitingUser.id}`;
-      socket.join(roomId);
-      waitingUser.join(roomId);
-
-      socket.roomId = roomId;
-      waitingUser.roomId = roomId;
-
-      socket.partner = waitingUser;
-      waitingUser.partner = socket;
-
-      socket.emit("match");
-      waitingUser.emit("match");
-
-      waitingUser = null;
-    } else {
-      waitingUser = socket;
-      socket.emit("waiting");
-    }
-  });
-
-  socket.on("message", (msg) => {
-    if (socket.partner) socket.partner.emit("message", msg);
-  });
-
-  socket.on("disconnect_chat", () => {
-    if (socket.partner) {
-      socket.partner.emit("partner_disconnected");
-      socket.partner.partner = null;
-      socket.partner = null;
-    }
-    if (waitingUser === socket) waitingUser = null;
-  });
-
-  socket.on("ban_ip", (ipToBan) => {
-    if (!connectedUsers[socket.id]?.isAdmin) return;
-
-    ipToBan = normalizeIP(ipToBan);
-
-    if (!bannedIPs.has(ipToBan)) {
-      bannedIPs.add(ipToBan);
-      saveBannedIPs();
-
-      // Disconnetti utenti bannati
-      Object.values(connectedUsers).forEach(({ ip, socket: s }) => {
-        if (ip === ipToBan) {
-          s.emit("banned");
-          s.disconnect(true);
-        }
-      });
-
-      console.log(`⛔ IP bannato: ${ipToBan}`);
-      updateAdminUsers();
-    }
-  });
-
-  socket.on("unban_ip", (ipToUnban) => {
-    if (!connectedUsers[socket.id]?.isAdmin) return;
-
-    ipToUnban = normalizeIP(ipToUnban);
-
-    if (bannedIPs.has(ipToUnban)) {
-      bannedIPs.delete(ipToUnban);
-      saveBannedIPs();
-      console.log(`✅ IP sbannato: ${ipToUnban}`);
-      updateAdminUsers();
-    }
-  });
-
-  socket.on("disconnect", () => {
-    console.log(`❌ Utente disconnesso: ${socket.id}`);
-    if (socket.partner) {
-      socket.partner.emit("partner_disconnected");
-      socket.partner.partner = null;
-    }
-    if (waitingUser === socket) waitingUser = null;
-
-    delete connectedUsers[socket.id];
-    updateAdminUsers();
-  });
-});
-
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 server.listen(PORT, () => {
   console.log(`🚀 Server avviato sulla porta ${PORT}`);
 });
