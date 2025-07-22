@@ -27,19 +27,29 @@
     const usersListEl = document.getElementById("usersList");
     const bannedListEl = document.getElementById("bannedList");
 
+    // Funzione per normalizzare IP ::ffff:xxx.xxx.xxx.xxx -> xxx.xxx.xxx.xxx
+    function normalizeIP(ip) {
+      if (!ip) return ip;
+      if (ip.startsWith("::ffff:")) {
+        return ip.split("::ffff:")[1];
+      }
+      return ip;
+    }
+
     // Aggiorna lista utenti
     socket.on("users_list", (users) => {
       usersListEl.innerHTML = "";
       users.forEach(({ socketId, ip }) => {
+        const normalizedIp = normalizeIP(ip);
         const li = document.createElement("li");
-        li.textContent = `${ip} (Socket: ${socketId})`;
+        li.textContent = `${normalizedIp} (Socket: ${socketId})`;
 
         // Pulsante ban
         const banBtn = document.createElement("button");
         banBtn.textContent = "Banna";
         banBtn.onclick = () => {
-          if (confirm(`Sei sicuro di bannare l'IP ${ip}?`)) {
-            socket.emit("ban_ip", ip);
+          if (confirm(`Sei sicuro di bannare l'IP ${normalizedIp}?`)) {
+            socket.emit("ban_ip", normalizedIp);
           }
         };
 
@@ -52,15 +62,16 @@
     socket.on("banned_list", (bannedIPs) => {
       bannedListEl.innerHTML = "";
       bannedIPs.forEach((ip) => {
+        const normalizedIp = normalizeIP(ip);
         const li = document.createElement("li");
-        li.textContent = ip;
+        li.textContent = normalizedIp;
 
         // Pulsante unban
         const unbanBtn = document.createElement("button");
         unbanBtn.textContent = "Sbanna";
         unbanBtn.onclick = () => {
-          if (confirm(`Sei sicuro di sbannare l'IP ${ip}?`)) {
-            socket.emit("unban_ip", ip);
+          if (confirm(`Sei sicuro di sbannare l'IP ${normalizedIp}?`)) {
+            socket.emit("unban_ip", normalizedIp);
           }
         };
 
