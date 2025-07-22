@@ -8,7 +8,6 @@ const path = require("path");
 
 const app = express();
 app.use(cors());
-
 const server = http.createServer(app);
 
 const io = new Server(server, {
@@ -18,73 +17,108 @@ const io = new Server(server, {
   },
 });
 
-// Autenticazione base per /admin
-app.use(
-  "/admin",
-  basicAuth({
-    users: { admin: "changeme" }, // Cambia password!
-    challenge: true,
-  })
-);
-
-app.get("/admin", (req, res) => {
-  res.sendFile(path.join(__dirname, "admin.html"));
-});
-
-// ──────────────────────────────────────────────────────────
-// ────────────── Gestione IP Bannati ───────────────────────
-// ──────────────────────────────────────────────────────────
-
+// ─────────────────────────────────────────────
+// Configurazione file
+// ─────────────────────────────────────────────
 const BANNED_IPS_FILE = path.join(__dirname, "banned-ips.json");
-let bannedIPs = new Set();
+const REPORTS_FILE = path.join(__dirname, "reports.json");
 
-// Carica IP bannati da file
+let bannedIPs = new Set();
+let reports = [];
+
+// Carica IP bannati
 if (fs.existsSync(BANNED_IPS_FILE)) {
   try {
-    const content = fs.readFileSync(BANNED_IPS_FILE, "utf8");
-    const list = JSON.parse(content);
+    const list = JSON.parse(fs.readFileSync(BANNED_IPS_FILE, "utf8"));
     if (Array.isArray(list)) bannedIPs = new Set(list);
   } catch (e) {
     console.error("Errore lettura banned-ips.json:", e);
   }
 }
 
-// Salva IP bannati nel file
+// Carica report
+if (fs.existsSync(REPORTS_FILE)) {
+  try {
+    const list = JSON.parse(fs.readFileSync(REPORTS_FILE, "utf8"));
+    if (Array.isArray(list)) reports = list;
+  } catch (e) {
+    console.error("Errore lettura reports.json:", e);
+  }
+}
+
+// Salvataggi su disco
 function saveBannedIPs() {
   fs.writeFileSync(BANNED_IPS_FILE, JSON.stringify([...bannedIPs], null, 2));
 }
 
-// Ottieni IP reale
+function saveReports() {
+  fs.writeFileSync(REPORTS_FILE, JSON.stringify(reports, null, 2));
+}
+
+// ─────────────────────────────────────────────
+// Autenticazione admin
+// ─────────────────────────────────────────────
+app.use(
+  "/admin",
+  basicAuth({
+    users: { admin: "changeme" },
+    challenge: true,
+  })
+);
+
+app.use(
+  "/adminreport",
+  basicAuth({
+    users: { admin: "changeme" },
+    challenge: true,
+  })
+);
+
+// ─────────────────────────────────────────────
+// Rotte HTML
+// ─────────────────────────────────────────────
+app.get("/admin", (req, res) => {
+  res.sendFile(path.join(__dirname, "admin.html"));
+});
+
+app.get("/adminreport", (req, res) => {
+  res.sendFile(path.join(__dirname, "adminreport.html"));
+});
+
+app.get("/reports.json", (req, res) => {
+  res.json(reports);
+});
+
+// ─────────────────────────────────────────────
+// Gestione utenti e socket
+// ─────────────────────────────────────────────
 function getClientIP(socket) {
-  const xForwarded = socket.handshake.headers["x-forwarded-for"];
-  let ip = xForwarded ? xForwarded.split(",")[0].trim() : socket.handshake.address;
+  const forwarded = socket.handshake.headers["x-forwarded-for"];
+  let ip = forwarded ? forwarded.split(",")[0].trim() : socket.handshake.address;
   if (ip.startsWith("::ffff:")) ip = ip.replace("::ffff:", "");
   return ip;
 }
 
-// ──────────────────────────────────────────────────────────
-// ────────────── Socket.IO Logica ──────────────────────────
-// ──────────────────────────────────────────────────────────
-
 let connectedUsers = {};
 let waitingUser = null;
 
-// Blocca utenti bannati
+// Middleware: blocca IP bannati
 io.use((socket, next) => {
   const ip = getClientIP(socket);
   if (bannedIPs.has(ip)) return next(new Error("BANNED"));
   next();
 });
 
+// Connessione utente
 io.on("connection", (socket) => {
   const ip = getClientIP(socket);
   const isAdmin = socket.handshake.query?.admin === "1";
+
   connectedUsers[socket.id] = { socket, ip, isAdmin };
 
   console.log(`${isAdmin ? "🛡️ Admin" : "✅ Utente"} connesso: ${socket.id} (${ip})`);
   updateAdminUI();
 
-  // Messaggi chat
   if (!isAdmin) {
     socket.on("start_chat", () => {
       if (waitingUser && waitingUser.connected) {
@@ -114,6 +148,20 @@ io.on("connection", (socket) => {
       }
       if (waitingUser === socket) waitingUser = null;
     });
+
+    // Ricevi segnalazione utente
+    socket.on("report_user", ({ partnerIp, chatLog }) => {
+      if (!partnerIp || !chatLog) return;
+      const report = {
+        reporterIp: ip,
+        reportedIp: partnerIp,
+        timestamp: new Date().toISOString(),
+        chatLog,
+      };
+      reports.push(report);
+      saveReports();
+      console.log(`📣 Segnalazione ricevuta da ${ip} contro ${partnerIp}`);
+    });
   }
 
   // Ban IP
@@ -125,7 +173,6 @@ io.on("connection", (socket) => {
       saveBannedIPs();
       console.log(`⛔ IP bannato: ${targetIP}`);
 
-      // Disconnetti gli utenti con quell'IP
       Object.values(connectedUsers).forEach(({ socket: s, ip }) => {
         if (ip === targetIP) {
           s.emit("banned");
@@ -156,14 +203,11 @@ io.on("connection", (socket) => {
   });
 });
 
-// Aggiorna la lista per tutti gli admin connessi
+// Aggiorna UI admin
 function updateAdminUI() {
   const users = Object.values(connectedUsers)
     .filter((u) => !u.isAdmin)
-    .map(({ socket, ip }) => ({
-      socketId: socket.id,
-      ip,
-    }));
+    .map(({ socket, ip }) => ({ socketId: socket.id, ip }));
 
   const banned = [...bannedIPs];
 
