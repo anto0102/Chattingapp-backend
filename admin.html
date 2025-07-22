@@ -4,91 +4,85 @@
   <meta charset="UTF-8" />
   <title>Admin Panel</title>
   <style>
-    body { font-family: Arial, sans-serif; padding: 20px; }
-    h2 { margin-top: 30px; }
-    ul { list-style-type: none; padding: 0; }
-    li { margin: 5px 0; }
-    button { margin-left: 10px; }
+    body { font-family: Arial, sans-serif; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
+    th { background: #eee; }
   </style>
 </head>
 <body>
   <h1>Admin Panel</h1>
-
   <h2>Utenti Connessi</h2>
-  <ul id="usersList"></ul>
+  <table id="usersTable">
+    <thead>
+      <tr>
+        <th>Socket ID</th>
+        <th>IP</th>
+        <th>Azioni</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
 
   <h2>IP Bannati</h2>
   <ul id="bannedList"></ul>
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
-    const socket = io("/", { query: { admin: "1" } });
+    const socket = io({
+      query: { admin: "1" }
+    });
 
-    const usersListEl = document.getElementById("usersList");
-    const bannedListEl = document.getElementById("bannedList");
-
-    // Funzione per normalizzare IP ::ffff:xxx.xxx.xxx.xxx -> xxx.xxx.xxx.xxx
+    // Funzione per normalizzare IP lato client
     function normalizeIP(ip) {
-      if (!ip) return ip;
-      if (ip.startsWith("::ffff:")) {
-        return ip.split("::ffff:")[1];
-      }
+      if (ip === "::1") return "127.0.0.1";
+      if (ip.startsWith("::ffff:")) return ip.substring(7);
       return ip;
     }
 
-    // Aggiorna lista utenti
+    // Aggiorna lista utenti nella tabella
     socket.on("users_list", (users) => {
-      usersListEl.innerHTML = "";
+      const tbody = document.querySelector("#usersTable tbody");
+      tbody.innerHTML = "";
       users.forEach(({ socketId, ip }) => {
-        const normalizedIp = normalizeIP(ip);
-        const li = document.createElement("li");
-        li.textContent = `${normalizedIp} (Socket: ${socketId})`;
-
-        // Pulsante ban
-        const banBtn = document.createElement("button");
-        banBtn.textContent = "Banna";
-        banBtn.onclick = () => {
-          if (confirm(`Sei sicuro di bannare l'IP ${normalizedIp}?`)) {
-            socket.emit("ban_ip", normalizedIp);
-          }
-        };
-
-        li.appendChild(banBtn);
-        usersListEl.appendChild(li);
+        const normalizedIP = normalizeIP(ip);
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${socketId}</td>
+          <td>${normalizedIP}</td>
+          <td><button onclick="banIP('${normalizedIP}')">Banna IP</button></td>
+        `;
+        tbody.appendChild(tr);
       });
     });
 
     // Aggiorna lista IP bannati
     socket.on("banned_list", (bannedIPs) => {
-      bannedListEl.innerHTML = "";
+      const ul = document.getElementById("bannedList");
+      ul.innerHTML = "";
       bannedIPs.forEach((ip) => {
-        const normalizedIp = normalizeIP(ip);
+        const normalizedIP = normalizeIP(ip);
         const li = document.createElement("li");
-        li.textContent = normalizedIp;
-
-        // Pulsante unban
+        li.textContent = normalizedIP + " ";
         const unbanBtn = document.createElement("button");
         unbanBtn.textContent = "Sbanna";
-        unbanBtn.onclick = () => {
-          if (confirm(`Sei sicuro di sbannare l'IP ${normalizedIp}?`)) {
-            socket.emit("unban_ip", normalizedIp);
-          }
-        };
-
+        unbanBtn.onclick = () => unbanIP(normalizedIP);
         li.appendChild(unbanBtn);
-        bannedListEl.appendChild(li);
+        ul.appendChild(li);
       });
     });
 
-    // Messaggi di errore o ban ricevuti
-    socket.on("banned", () => {
-      alert("Sei stato bannato dal server.");
-      socket.disconnect();
-    });
+    function banIP(ip) {
+      if (confirm(`Sei sicuro di voler bannare l'IP ${ip}?`)) {
+        socket.emit("ban_ip", ip);
+      }
+    }
 
-    socket.on("connect_error", (err) => {
-      alert("Connessione fallita: " + err.message);
-    });
+    function unbanIP(ip) {
+      if (confirm(`Sei sicuro di voler sbannare l'IP ${ip}?`)) {
+        socket.emit("unban_ip", ip);
+      }
+    }
   </script>
 </body>
 </html>
