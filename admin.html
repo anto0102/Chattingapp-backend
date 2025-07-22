@@ -15,7 +15,7 @@
     table {
       width: 100%;
       border-collapse: collapse;
-      margin-bottom: 1rem;
+      margin-bottom: 2rem;
     }
     th, td {
       padding: 0.5rem;
@@ -33,6 +33,9 @@
     button:hover {
       background-color: #b91c1c;
     }
+    #manualBan {
+      margin-top: 2rem;
+    }
   </style>
 </head>
 <body>
@@ -48,26 +51,27 @@
     <tbody id="usersTableBody"></tbody>
   </table>
 
+  <div id="manualBan">
+    <h3>Ban manuale IP</h3>
+    <input type="text" id="manualIp" placeholder="Inserisci IP" />
+    <button id="banManual">Banna</button>
+  </div>
+
   <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
   <script>
-    // Cambia questo URL con il tuo backend
-    const BACKEND_URL = "https://chattingapp-backend.onrender.com";
-
-    const socket = io(BACKEND_URL, {
-      query: { admin: "1" },
-      transports: ['websocket', 'polling'] // fallback
+    const socket = io({
+      query: { admin: "1" }
     });
 
     const usersTableBody = document.getElementById("usersTableBody");
 
     socket.on("connect", () => {
-      console.log("Admin connesso:", socket.id);
+      console.log("🛡️ Admin connesso:", socket.id);
     });
 
     socket.on("users_list", (users) => {
       usersTableBody.innerHTML = "";
       users.forEach(({ socketId, ip }) => {
-        // Non mostrare admin a se stesso (anche se già filtrato backend)
         if (socketId === socket.id) return;
 
         const tr = document.createElement("tr");
@@ -79,23 +83,24 @@
         usersTableBody.appendChild(tr);
       });
 
-      // Aggiungi evento click per i bottoni ban
-      usersTableBody.querySelectorAll("button").forEach(btn => {
+      usersTableBody.querySelectorAll("button").forEach((btn) => {
         btn.addEventListener("click", () => {
           const ipToBan = btn.getAttribute("data-ip");
-          if (confirm(`Sei sicuro di voler bannare l'IP ${ipToBan}?`)) {
+          if (confirm(`Bannare IP ${ipToBan}?`)) {
             socket.emit("ban_ip", ipToBan);
           }
         });
       });
     });
 
-    socket.on("disconnect", (reason) => {
-      console.warn("Admin socket disconnesso:", reason);
-    });
-
-    socket.on("connect_error", (err) => {
-      console.error("Errore connessione admin socket:", err.message);
+    document.getElementById("banManual").addEventListener("click", () => {
+      const ip = document.getElementById("manualIp").value.trim();
+      if (ip) {
+        if (confirm(`Bannare manualmente IP ${ip}?`)) {
+          socket.emit("ban_ip", ip);
+          document.getElementById("manualIp").value = "";
+        }
+      }
     });
   </script>
 </body>
