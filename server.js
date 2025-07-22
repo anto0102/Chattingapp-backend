@@ -52,22 +52,28 @@ try {
   bannedIPs = new Set();
 }
 
-// Funzione per normalizzare IP, ora anche ::1 -> 127.0.0.1
+// Funzione per normalizzare IP
 function normalizeIP(ip) {
-  if (!ip) return "";
-  if (ip === "::1") return "127.0.0.1"; // localhost IPv6 convertito a IPv4
-  if (ip.startsWith("::ffff:")) return ip.substring(7);
+  if (!ip) return ip;
+  if (ip.startsWith("::ffff:")) {
+    return ip.split("::ffff:")[1];
+  }
   return ip;
 }
 
+// Funzione per ottenere l'IP reale, considerando il proxy
+function getClientIP(socket) {
+  const xForwardedFor = socket.handshake.headers['x-forwarded-for'];
+  if (xForwardedFor) {
+    const ips = xForwardedFor.split(',').map(ip => ip.trim());
+    return normalizeIP(ips[0]);
+  }
+  return normalizeIP(socket.handshake.address);
+}
+
 function saveBannedIPs() {
-  console.log("Salvataggio banned-ips.json con IP:", Array.from(bannedIPs));
   fs.writeFile(BANNED_IPS_FILE, JSON.stringify(Array.from(bannedIPs), null, 2), (err) => {
-    if (err) {
-      console.error("Errore salvando banned-ips.json:", err);
-    } else {
-      console.log("File banned-ips.json aggiornato correttamente.");
-    }
+    if (err) console.error("Errore salvando banned-ips.json:", err);
   });
 }
 
@@ -93,8 +99,7 @@ function updateAdminUsers() {
 
 // Middleware blocco IP bannati con IP normalizzati
 io.use((socket, next) => {
-  let ip = socket.handshake.address;
-  ip = normalizeIP(ip);
+  let ip = getClientIP(socket);
   if (bannedIPs.has(ip)) {
     return next(new Error("Sei stato bannato"));
   }
@@ -102,9 +107,7 @@ io.use((socket, next) => {
 });
 
 io.on("connection", (socket) => {
-  let ip = socket.handshake.address;
-  ip = normalizeIP(ip);
-
+  let ip = getClientIP(socket);
   const isAdmin = socket.handshake.query?.admin === "1";
 
   connectedUsers[socket.id] = { ip, socket, isAdmin };
@@ -151,13 +154,9 @@ io.on("connection", (socket) => {
   });
 
   socket.on("ban_ip", (ipToBan) => {
-    if (!connectedUsers[socket.id]?.isAdmin) {
-      console.log("Utente non admin ha tentato di bannare IP");
-      return;
-    }
+    if (!connectedUsers[socket.id]?.isAdmin) return;
 
     ipToBan = normalizeIP(ipToBan);
-    console.log(`Comando ban_ip ricevuto per IP: "${ipToBan}"`);
 
     if (!bannedIPs.has(ipToBan)) {
       bannedIPs.add(ipToBan);
@@ -166,7 +165,6 @@ io.on("connection", (socket) => {
       // Disconnetti utenti bannati
       Object.values(connectedUsers).forEach(({ ip, socket: s }) => {
         if (ip === ipToBan) {
-          console.log(`Disconnetto utente con IP bannato: ${ip}`);
           s.emit("banned");
           s.disconnect(true);
         }
@@ -174,8 +172,6 @@ io.on("connection", (socket) => {
 
       console.log(`⛔ IP bannato: ${ipToBan}`);
       updateAdminUsers();
-    } else {
-      console.log(`IP ${ipToBan} è già bannato.`);
     }
   });
 
