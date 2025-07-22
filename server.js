@@ -18,13 +18,11 @@ const io = new Server(server, {
   },
 });
 
-// Variabile globale per il matchmaking
 let waitingUser = null;
 
 const ADMIN_USERNAME = "admin";
 const ADMIN_PASSWORD = "changeme"; // Cambia la password prima di mettere online
 
-// Basic auth per pagina admin
 app.use(
   "/admin",
   basicAuth({
@@ -34,50 +32,40 @@ app.use(
   })
 );
 
-// Serve pagina admin statica
 app.get("/admin", (req, res) => {
-  res.sendFile(__dirname + "/admin.html");
+  res.sendFile(path.join(__dirname, "admin.html"));
 });
-
-// --- Gestione IP bannati persistenti ---
 
 const BANNED_IPS_FILE = path.join(__dirname, "banned-ips.json");
 
-// Carica IP bannati da file o crea file vuoto se non esiste
 let bannedIPs = new Set();
 try {
   if (fs.existsSync(BANNED_IPS_FILE)) {
-    const data = fs.readFileSync(BANNED_IPS_FILE, "utf-8");
+    const data = fs.readFileSync(BANNED_IPS_FILE, "utf8");
     const ips = JSON.parse(data);
-    if (Array.isArray(ips)) {
-      bannedIPs = new Set(ips);
-    }
+    if (Array.isArray(ips)) bannedIPs = new Set(ips);
   } else {
-    // Crea file vuoto
     fs.writeFileSync(BANNED_IPS_FILE, JSON.stringify([]));
   }
-} catch (err) {
-  console.error("Errore caricando banned-ips.json:", err);
+} catch (e) {
+  console.error("Errore caricando banned-ips.json:", e);
   bannedIPs = new Set();
 }
 
-// Funzione per salvare bannedIPs su file
 function saveBannedIPs() {
   fs.writeFile(BANNED_IPS_FILE, JSON.stringify(Array.from(bannedIPs), null, 2), (err) => {
     if (err) console.error("Errore salvando banned-ips.json:", err);
   });
 }
 
-// Utenti connessi: socketId => { ip, socket, isAdmin }
 const connectedUsers = {};
 
-// Invia la lista utenti attivi agli admin
 function updateAdminUsers() {
   const usersList = Object.values(connectedUsers)
     .filter((u) => !u.isAdmin)
-    .map((u) => ({
-      socketId: u.socket.id,
-      ip: u.ip,
+    .map(({ socket, ip }) => ({
+      socketId: socket.id,
+      ip,
     }));
 
   const adminSockets = Object.values(connectedUsers)
@@ -90,7 +78,7 @@ function updateAdminUsers() {
   });
 }
 
-// Blocca gli IP bannati
+// Middleware blocco IP bannati
 io.use((socket, next) => {
   const ip = socket.handshake.address;
   if (bannedIPs.has(ip)) {
@@ -99,21 +87,17 @@ io.use((socket, next) => {
   next();
 });
 
-// Connessione socket
 io.on("connection", (socket) => {
   const ip = socket.handshake.address;
-  const isAdmin = socket.handshake.query && socket.handshake.query.admin === "1";
+  const isAdmin = socket.handshake.query?.admin === "1";
 
   connectedUsers[socket.id] = { ip, socket, isAdmin };
 
   console.log(isAdmin ? `🛡️ Admin connesso: ${socket.id}` : `✅ Utente connesso: ${socket.id} (${ip})`);
 
-  if (isAdmin) {
-    updateAdminUsers();
-    return;
-  }
-
   updateAdminUsers();
+
+  if (isAdmin) return;
 
   socket.on("start_chat", () => {
     if (waitingUser && waitingUser.connected) {
@@ -138,9 +122,7 @@ io.on("connection", (socket) => {
   });
 
   socket.on("message", (msg) => {
-    if (socket.partner) {
-      socket.partner.emit("message", msg);
-    }
+    if (socket.partner) socket.partner.emit("message", msg);
   });
 
   socket.on("disconnect_chat", () => {
@@ -149,27 +131,27 @@ io.on("connection", (socket) => {
       socket.partner.partner = null;
       socket.partner = null;
     }
-    if (waitingUser === socket) {
-      waitingUser = null;
-    }
+    if (waitingUser === socket) waitingUser = null;
   });
 
   socket.on("ban_ip", (ipToBan) => {
     if (!connectedUsers[socket.id]?.isAdmin) return;
 
-    bannedIPs.add(ipToBan);
-    saveBannedIPs();
+    if (!bannedIPs.has(ipToBan)) {
+      bannedIPs.add(ipToBan);
+      saveBannedIPs();
 
-    // Disconnetti gli utenti bannati
-    Object.values(connectedUsers).forEach(({ ip, socket: s }) => {
-      if (ip === ipToBan) {
-        s.emit("banned");
-        s.disconnect();
-      }
-    });
+      // Disconnetti utenti bannati
+      Object.values(connectedUsers).forEach(({ ip, socket: s }) => {
+        if (ip === ipToBan) {
+          s.emit("banned");
+          s.disconnect(true);
+        }
+      });
 
-    updateAdminUsers();
-    console.log(`⛔ IP bannato: ${ipToBan}`);
+      console.log(`⛔ IP bannato: ${ipToBan}`);
+      updateAdminUsers();
+    }
   });
 
   socket.on("unban_ip", (ipToUnban) => {
@@ -178,8 +160,8 @@ io.on("connection", (socket) => {
     if (bannedIPs.has(ipToUnban)) {
       bannedIPs.delete(ipToUnban);
       saveBannedIPs();
-      updateAdminUsers();
       console.log(`✅ IP sbannato: ${ipToUnban}`);
+      updateAdminUsers();
     }
   });
 
@@ -189,9 +171,8 @@ io.on("connection", (socket) => {
       socket.partner.emit("partner_disconnected");
       socket.partner.partner = null;
     }
-    if (waitingUser === socket) {
-      waitingUser = null;
-    }
+    if (waitingUser === socket) waitingUser = null;
+
     delete connectedUsers[socket.id];
     updateAdminUsers();
   });
