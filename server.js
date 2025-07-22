@@ -8,10 +8,9 @@ app.use(cors());
 
 const server = http.createServer(app);
 
-// Setup Socket.IO con CORS
 const io = new Server(server, {
   cors: {
-    origin: "*", // oppure specifica l'URL del tuo frontend
+    origin: "*", // Cambia con il tuo dominio se vuoi
     methods: ["GET", "POST"]
   }
 });
@@ -21,28 +20,30 @@ let waitingUser = null;
 io.on("connection", (socket) => {
   console.log("✅ Nuovo utente connesso:", socket.id);
 
-  if (waitingUser) {
-    // Crea coppia e notifiche
-    const roomId = socket.id + "#" + waitingUser.id;
-    socket.join(roomId);
-    waitingUser.join(roomId);
+  socket.on("start_chat", () => {
+    if (waitingUser) {
+      // Crea stanza
+      const roomId = `${socket.id}#${waitingUser.id}`;
+      socket.join(roomId);
+      waitingUser.join(roomId);
 
-    socket.roomId = roomId;
-    waitingUser.roomId = roomId;
+      socket.roomId = roomId;
+      waitingUser.roomId = roomId;
 
-    socket.partner = waitingUser;
-    waitingUser.partner = socket;
+      socket.partner = waitingUser;
+      waitingUser.partner = socket;
 
-    waitingUser.emit("partner-found");
-    socket.emit("partner-found");
+      // Notifica connessione avvenuta
+      socket.emit("match");
+      waitingUser.emit("match");
 
-    waitingUser = null;
-  } else {
-    waitingUser = socket;
-    socket.emit("waiting");
-  }
+      waitingUser = null;
+    } else {
+      waitingUser = socket;
+      socket.emit("waiting");
+    }
+  });
 
-  // Ricezione messaggi
   socket.on("message", (msg) => {
     if (socket.partner) {
       socket.partner.emit("message", msg);
@@ -52,8 +53,19 @@ io.on("connection", (socket) => {
   socket.on("disconnect", () => {
     console.log("❌ Utente disconnesso:", socket.id);
     if (socket.partner) {
-      socket.partner.emit("partner-disconnected");
+      socket.partner.emit("partner_disconnected");
       socket.partner.partner = null;
+    }
+    if (waitingUser === socket) {
+      waitingUser = null;
+    }
+  });
+
+  socket.on("disconnect_chat", () => {
+    if (socket.partner) {
+      socket.partner.emit("partner_disconnected");
+      socket.partner.partner = null;
+      socket.partner = null;
     }
     if (waitingUser === socket) {
       waitingUser = null;
