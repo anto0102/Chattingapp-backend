@@ -17,12 +17,19 @@ const io = new Server(server, {
 
 let waitingUser = null;
 
+// 🔢 Funzione per inviare il numero di utenti connessi
+function broadcastOnlineCount() {
+  io.emit("online_count", io.engine.clientsCount);
+}
+
 io.on("connection", (socket) => {
   console.log("✅ Nuovo utente connesso:", socket.id);
 
+  // Invia il numero aggiornato
+  broadcastOnlineCount();
+
   socket.on("start_chat", () => {
     if (waitingUser) {
-      // Crea stanza
       const roomId = `${socket.id}#${waitingUser.id}`;
       socket.join(roomId);
       waitingUser.join(roomId);
@@ -33,7 +40,6 @@ io.on("connection", (socket) => {
       socket.partner = waitingUser;
       waitingUser.partner = socket;
 
-      // Notifica connessione avvenuta
       socket.emit("match");
       waitingUser.emit("match");
 
@@ -50,17 +56,6 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("disconnect", () => {
-    console.log("❌ Utente disconnesso:", socket.id);
-    if (socket.partner) {
-      socket.partner.emit("partner_disconnected");
-      socket.partner.partner = null;
-    }
-    if (waitingUser === socket) {
-      waitingUser = null;
-    }
-  });
-
   socket.on("disconnect_chat", () => {
     if (socket.partner) {
       socket.partner.emit("partner_disconnected");
@@ -70,6 +65,20 @@ io.on("connection", (socket) => {
     if (waitingUser === socket) {
       waitingUser = null;
     }
+  });
+
+  socket.on("disconnect", () => {
+    console.log("❌ Utente disconnesso:", socket.id);
+    if (socket.partner) {
+      socket.partner.emit("partner_disconnected");
+      socket.partner.partner = null;
+    }
+    if (waitingUser === socket) {
+      waitingUser = null;
+    }
+
+    // Aggiorna il numero di utenti online
+    broadcastOnlineCount();
   });
 });
 
