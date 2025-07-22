@@ -125,9 +125,11 @@ io.on("connection", (socket) => {
         const room = `chat_${socket.id}_${waitingUser.id}`;
         socket.join(room);
         waitingUser.join(room);
-        // INVIA IP PARTNER qui
-        socket.emit("match", { partnerIp: waitingUser.ip });
-        waitingUser.emit("match", { partnerIp: socket.ip });
+
+        // Mando partnerIp al client per abilitare la segnalazione
+        socket.emit("match", { partnerIp: getClientIP(waitingUser) });
+        waitingUser.emit("match", { partnerIp: getClientIP(socket) });
+
         socket.partner = waitingUser;
         waitingUser.partner = socket;
         waitingUser = null;
