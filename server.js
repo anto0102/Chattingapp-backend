@@ -52,6 +52,15 @@ try {
   bannedIPs = new Set();
 }
 
+// Normalizza IP per evitare mismatch IPv6/IPv4
+function normalizeIP(ip) {
+  if (!ip) return ip;
+  if (ip.startsWith("::ffff:")) {
+    return ip.split("::ffff:")[1];
+  }
+  return ip;
+}
+
 function saveBannedIPs() {
   fs.writeFile(BANNED_IPS_FILE, JSON.stringify(Array.from(bannedIPs), null, 2), (err) => {
     if (err) console.error("Errore salvando banned-ips.json:", err);
@@ -80,7 +89,7 @@ function updateAdminUsers() {
 
 // Middleware blocco IP bannati
 io.use((socket, next) => {
-  const ip = socket.handshake.address;
+  const ip = normalizeIP(socket.handshake.address);
   if (bannedIPs.has(ip)) {
     return next(new Error("Sei stato bannato"));
   }
@@ -88,7 +97,7 @@ io.use((socket, next) => {
 });
 
 io.on("connection", (socket) => {
-  const ip = socket.handshake.address;
+  const ip = normalizeIP(socket.handshake.address);
   const isAdmin = socket.handshake.query?.admin === "1";
 
   connectedUsers[socket.id] = { ip, socket, isAdmin };
@@ -137,19 +146,21 @@ io.on("connection", (socket) => {
   socket.on("ban_ip", (ipToBan) => {
     if (!connectedUsers[socket.id]?.isAdmin) return;
 
-    if (!bannedIPs.has(ipToBan)) {
-      bannedIPs.add(ipToBan);
+    const normalizedBanIP = normalizeIP(ipToBan);
+
+    if (!bannedIPs.has(normalizedBanIP)) {
+      bannedIPs.add(normalizedBanIP);
       saveBannedIPs();
 
       // Disconnetti utenti bannati
       Object.values(connectedUsers).forEach(({ ip, socket: s }) => {
-        if (ip === ipToBan) {
+        if (normalizeIP(ip) === normalizedBanIP) {
           s.emit("banned");
           s.disconnect(true);
         }
       });
 
-      console.log(`⛔ IP bannato: ${ipToBan}`);
+      console.log(`⛔ IP bannato: ${normalizedBanIP}`);
       updateAdminUsers();
     }
   });
@@ -157,10 +168,12 @@ io.on("connection", (socket) => {
   socket.on("unban_ip", (ipToUnban) => {
     if (!connectedUsers[socket.id]?.isAdmin) return;
 
-    if (bannedIPs.has(ipToUnban)) {
-      bannedIPs.delete(ipToUnban);
+    const normalizedUnbanIP = normalizeIP(ipToUnban);
+
+    if (bannedIPs.has(normalizedUnbanIP)) {
+      bannedIPs.delete(normalizedUnbanIP);
       saveBannedIPs();
-      console.log(`✅ IP sbannato: ${ipToUnban}`);
+      console.log(`✅ IP sbannato: ${normalizedUnbanIP}`);
       updateAdminUsers();
     }
   });
