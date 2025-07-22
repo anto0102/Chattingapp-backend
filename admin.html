@@ -45,11 +45,58 @@
         <th>Azione</th>
       </tr>
     </thead>
-    <tbody id="usersTableBody">
-    </tbody>
+    <tbody id="usersTableBody"></tbody>
   </table>
 
   <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
   <script>
-    // Cambia l'URL se serve, qui assuming backend è stesso host
-    const socket = io({
+    // Cambia questo URL con il tuo backend
+    const BACKEND_URL = "https://chattingapp-backend.onrender.com";
+
+    const socket = io(BACKEND_URL, {
+      query: { admin: "1" },
+      transports: ['websocket', 'polling'] // fallback
+    });
+
+    const usersTableBody = document.getElementById("usersTableBody");
+
+    socket.on("connect", () => {
+      console.log("Admin connesso:", socket.id);
+    });
+
+    socket.on("users_list", (users) => {
+      usersTableBody.innerHTML = "";
+      users.forEach(({ socketId, ip }) => {
+        // Non mostrare admin a se stesso (anche se già filtrato backend)
+        if (socketId === socket.id) return;
+
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${socketId}</td>
+          <td>${ip}</td>
+          <td><button data-ip="${ip}">Ban</button></td>
+        `;
+        usersTableBody.appendChild(tr);
+      });
+
+      // Aggiungi evento click per i bottoni ban
+      usersTableBody.querySelectorAll("button").forEach(btn => {
+        btn.addEventListener("click", () => {
+          const ipToBan = btn.getAttribute("data-ip");
+          if (confirm(`Sei sicuro di voler bannare l'IP ${ipToBan}?`)) {
+            socket.emit("ban_ip", ipToBan);
+          }
+        });
+      });
+    });
+
+    socket.on("disconnect", (reason) => {
+      console.warn("Admin socket disconnesso:", reason);
+    });
+
+    socket.on("connect_error", (err) => {
+      console.error("Errore connessione admin socket:", err.message);
+    });
+  </script>
+</body>
+</html>
