@@ -162,6 +162,20 @@ io.on("connection", (socket) => {
         socket.partner.emit("reaction", data);
       }
     });
+    
+    // ⬇️ MODIFICA: Nuovi gestori per gli eventi di scrittura
+    socket.on("typing", () => {
+      if (socket.partner && socket.partner.connected) {
+        socket.partner.emit("typing");
+      }
+    });
+
+    socket.on("stop_typing", () => {
+      if (socket.partner && socket.partner.connected) {
+        socket.partner.emit("stop_typing");
+      }
+    });
+    // ⬆️ FINE MODIFICA
 
     socket.on("disconnect_chat", () => {
       if (socket.partner) {
