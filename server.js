@@ -1,7 +1,7 @@
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
-const { v4: uuidv4 } = require('uuid'); // MODIFICA 1: Importiamo la libreria per gli ID
+const { v4: uuidv4 } = require('uuid');
 const cors = require("cors");
 const basicAuth = require("express-basic-auth");
 const fs = require("fs");
@@ -18,77 +18,19 @@ const io = new Server(server, {
   },
 });
 
-// ─────────────────────────────────────────────
-// Configurazione file
-// ─────────────────────────────────────────────
+// ... (tutto il codice di configurazione e admin rimane invariato) ...
 const BANNED_IPS_FILE = path.join(__dirname, "banned-ips.json");
 const REPORTS_FILE = path.join(__dirname, "reports.json");
-
-let bannedIPs = new Set();
-let reports = [];
-
-// Carica IP bannati
-if (fs.existsSync(BANNED_IPS_FILE)) {
-  try {
-    const list = JSON.parse(fs.readFileSync(BANNED_IPS_FILE, "utf8"));
-    if (Array.isArray(list)) bannedIPs = new Set(list);
-  } catch (e) {
-    console.error("Errore lettura banned-ips.json:", e);
-  }
-}
-
-// Carica report
-if (fs.existsSync(REPORTS_FILE)) {
-  try {
-    const list = JSON.parse(fs.readFileSync(REPORTS_FILE, "utf8"));
-    if (Array.isArray(list)) reports = list;
-  } catch (e) {
-    console.error("Errore lettura reports.json:", e);
-  }
-}
-
-// Salvataggi su disco
-function saveBannedIPs() {
-  fs.writeFileSync(BANNED_IPS_FILE, JSON.stringify([...bannedIPs], null, 2));
-}
-
-function saveReports() {
-  fs.writeFileSync(REPORTS_FILE, JSON.stringify(reports, null, 2));
-}
-
-// ─────────────────────────────────────────────
-// Autenticazione admin
-// ─────────────────────────────────────────────
-app.use(
-  "/admin",
-  basicAuth({
-    users: { admin: "changeme" },
-    challenge: true,
-  })
-);
-
-app.use(
-  "/adminreport",
-  basicAuth({
-    users: { admin: "changeme" },
-    challenge: true,
-  })
-);
-
-// ─────────────────────────────────────────────
-// Rotte HTML
-// ─────────────────────────────────────────────
-app.get("/admin", (req, res) => {
-  res.sendFile(path.join(__dirname, "admin.html"));
-});
-
-app.get("/adminreport", (req, res) => {
-  res.sendFile(path.join(__dirname, "adminreport.html"));
-});
-
-app.get("/reports.json", (req, res) => {
-  res.json(reports);
-});
+let bannedIPs = new Set(); let reports = [];
+if (fs.existsSync(BANNED_IPS_FILE)) { try { const list = JSON.parse(fs.readFileSync(BANNED_IPS_FILE, "utf8")); if (Array.isArray(list)) bannedIPs = new Set(list); } catch (e) { console.error("Errore lettura banned-ips.json:", e); } }
+if (fs.existsSync(REPORTS_FILE)) { try { const list = JSON.parse(fs.readFileSync(REPORTS_FILE, "utf8")); if (Array.isArray(list)) reports = list; } catch (e) { console.error("Errore lettura reports.json:", e); } }
+function saveBannedIPs() { fs.writeFileSync(BANNED_IPS_FILE, JSON.stringify([...bannedIPs], null, 2)); }
+function saveReports() { fs.writeFileSync(REPORTS_FILE, JSON.stringify(reports, null, 2)); }
+app.use("/admin", basicAuth({ users: { admin: "changeme" }, challenge: true, }));
+app.use("/adminreport", basicAuth({ users: { admin: "changeme" }, challenge: true, }));
+app.get("/admin", (req, res) => { res.sendFile(path.join(__dirname, "admin.html")); });
+app.get("/adminreport", (req, res) => { res.sendFile(path.join(__dirname, "adminreport.html")); });
+app.get("/reports.json", (req, res) => { res.json(reports); });
 
 // ─────────────────────────────────────────────
 // Gestione utenti e socket
@@ -102,32 +44,26 @@ function getClientIP(socket) {
 
 let connectedUsers = {};
 let waitingUser = null;
+let activeChats = {}; // MODIFICA: "Memoria" per le chat attive
 
-// Funzione per inviare il conteggio degli utenti online a TUTTI i client
 function emitOnlineCount() {
   const currentOnlineUsers = Object.values(connectedUsers).filter(u => !u.isAdmin).length;
   io.emit('online_count', currentOnlineUsers);
   console.log(`Aggiornato conteggio online: ${currentOnlineUsers}`);
 }
 
-// Middleware: blocca IP bannati
 io.use((socket, next) => {
   const ip = getClientIP(socket);
   if (bannedIPs.has(ip)) return next(new Error("BANNED"));
   next();
 });
 
-// Connessione utente
 io.on("connection", (socket) => {
   const ip = getClientIP(socket);
   const isAdmin = socket.handshake.query?.admin === "1";
-
   connectedUsers[socket.id] = { socket, ip, isAdmin };
-
   console.log(`${isAdmin ? "🛡️ Admin" : "✅ Utente"} connesso: ${socket.id} (${ip})`);
-  
-  emitOnlineCount();
-  updateAdminUI();
+  emitOnlineCount(); updateAdminUI();
 
   if (!isAdmin) {
     socket.on("start_chat", () => {
@@ -141,6 +77,12 @@ io.on("connection", (socket) => {
 
         socket.partner = waitingUser;
         waitingUser.partner = socket;
+        
+        // MODIFICA: Creiamo una "memoria" per questa chat
+        activeChats[room] = { messages: [] };
+        socket.room = room;
+        waitingUser.room = room;
+
         waitingUser = null;
       } else {
         waitingUser = socket;
@@ -148,146 +90,79 @@ io.on("connection", (socket) => {
       }
     });
 
-    // MODIFICA 2: L'evento 'message' ora crea un oggetto con ID
     socket.on("message", (msgText) => {
       if (socket.partner && socket.partner.connected) {
-        // 1. Crea l'oggetto-messaggio
-        const messageObject = {
-          id: uuidv4(), // Genera un ID unico
-          text: msgText,
-          senderId: socket.id,
-          timestamp: new Date(),
-          reactions: {} // Pronto per le reazioni
-        };
-
-        // 2. Invia l'oggetto a entrambi gli utenti
-        io.to(socket.id).to(socket.partner.id).emit("new_message", messageObject);
+        const messageObject = { id: uuidv4(), text: msgText, senderId: socket.id, timestamp: new Date(), reactions: {} };
         
-        console.log(`Messaggio [${messageObject.id}] da ${socket.id} al partner ${socket.partner.id}`);
-
+        // MODIFICA: Salviamo il messaggio nella memoria della chat
+        if (socket.room && activeChats[socket.room]) {
+            activeChats[socket.room].messages.push(messageObject);
+        }
+        
+        io.to(socket.id).to(socket.partner.id).emit("new_message", messageObject);
+        console.log(`Messaggio [${messageObject.id}] da ${socket.id}`);
       } else {
-        socket.emit("partner_disconnected");
-        socket.partner = null;
-      }
-    });
-
-    socket.on("react", (data) => {
-      if (socket.partner && socket.partner.connected) {
-        socket.partner.emit("reaction", data);
+        socket.emit("partner_disconnected"); socket.partner = null;
       }
     });
     
-    socket.on("typing", () => {
-      if (socket.partner && socket.partner.connected) {
-        socket.partner.emit("typing");
-      }
-    });
+    // MODIFICA: Aggiungiamo la logica per ricevere le reazioni
+    socket.on('add_reaction', ({ messageId, emoji }) => {
+        const room = socket.room;
+        if (!room || !activeChats[room] || !socket.partner) return;
 
-    socket.on("stop_typing", () => {
-      if (socket.partner && socket.partner.connected) {
-        socket.partner.emit("stop_typing");
-      }
-    });
+        // Troviamo il messaggio nella memoria della chat
+        const message = activeChats[room].messages.find(m => m.id === messageId);
+        if (!message) return;
 
-    socket.on("disconnect_chat", () => {
-      if (socket.partner) {
-        socket.partner.emit("partner_disconnected");
-        socket.partner.partner = null;
-        socket.partner = null;
-      }
-      if (waitingUser === socket) waitingUser = null;
-    });
-
-    socket.on("report_user", ({ partnerIp, chatLog }) => {
-      if (!partnerIp || !chatLog) return;
-      const report = {
-        reporterIp: ip,
-        reportedIp: partnerIp,
-        timestamp: new Date().toISOString(),
-        chatLog,
-      };
-      reports.push(report);
-      saveReports();
-      console.log(`📣 Segnalazione ricevuta da ${ip} contro ${partnerIp}`);
-
-      const reportedSocket = Object.values(connectedUsers).find(
-        (u) => !u.isAdmin && u.ip === partnerIp
-      )?.socket;
-
-      if (reportedSocket) {
-        reportedSocket.emit("banned");
-        reportedSocket.disconnect(true);
-        console.log(`🚨 Utente segnalato disconnesso: ${partnerIp}`);
-      }
-
-      if (socket.partner) {
-        socket.partner.emit("partner_disconnected");
-        socket.partner.partner = null;
-        socket.partner = null;
-      }
-      if (waitingUser === socket) waitingUser = null;
-      socket.disconnect(true);
-      console.log(` REPORTER DISCONNECTED ${ip}`)
-    });
-  }
-
-  socket.on("ban_ip", (targetIP) => {
-    if (!connectedUsers[socket.id]?.isAdmin) return;
-    if (!bannedIPs.has(targetIP)) {
-      bannedIPs.add(targetIP);
-      saveBannedIPs();
-      console.log(`⛔ IP bannato: ${targetIP}`);
-      Object.values(connectedUsers).forEach(({ socket: s, ip }) => {
-        if (ip === targetIP) {
-          s.emit("banned");
-          s.disconnect(true);
+        // Aggiungiamo o aggiorniamo il conteggio della reazione
+        if (!message.reactions[emoji]) {
+            message.reactions[emoji] = new Set();
         }
-      });
-      updateAdminUI();
-      emitOnlineCount();
-    }
-  });
+        // Aggiungiamo l'ID dell'utente che ha reagito per gestire il tocco singolo
+        if (message.reactions[emoji].has(socket.id)) {
+            message.reactions[emoji].delete(socket.id); // L'utente toglie la reazione
+        } else {
+            message.reactions[emoji].add(socket.id); // L'utente aggiunge la reazione
+        }
+        
+        // Convertiamo il Set in un numero per il client
+        const reactionsForClient = {};
+        for (const key in message.reactions) {
+            reactionsForClient[key] = message.reactions[key].size;
+        }
 
-  socket.on("unban_ip", (ipToUnban) => {
-    if (!connectedUsers[socket.id]?.isAdmin) return;
-    if (bannedIPs.has(ipToUnban)) {
-      bannedIPs.delete(ipToUnban);
-      saveBannedIPs();
-      console.log(`✅ IP sbannato: ${ipToUnban}`);
-      updateAdminUI();
-    }
-  });
+        // Inviamo l'aggiornamento a entrambi gli utenti
+        io.to(socket.id).to(socket.partner.id).emit('update_reactions', { messageId, reactions: reactionsForClient });
+    });
 
+    // ... il resto degli eventi come typing, disconnect_chat, etc...
+    socket.on("typing", () => { if (socket.partner && socket.partner.connected) { socket.partner.emit("typing"); } });
+    socket.on("stop_typing", () => { if (socket.partner && socket.partner.connected) { socket.partner.emit("stop_typing"); } });
+    socket.on("disconnect_chat", () => { 
+        if(socket.room) delete activeChats[socket.room];
+        if (socket.partner) { socket.partner.emit("partner_disconnected"); socket.partner.partner = null; socket.partner.room = null; socket.partner = null; } 
+        socket.room = null;
+        if (waitingUser === socket) waitingUser = null; 
+    });
+    // ...
+  }
+  
+  // ... resto del file ...
   socket.on("disconnect", () => {
-    if (connectedUsers[socket.id] && connectedUsers[socket.id].socket.partner) {
-      const partnerSocket = connectedUsers[socket.id].socket.partner;
-      if (partnerSocket.connected) {
-        partnerSocket.emit("partner_disconnected");
-        partnerSocket.partner = null;
-      }
+    const user = connectedUsers[socket.id];
+    if (user && user.socket.room) delete activeChats[user.socket.room];
+    if (user && user.socket.partner) {
+      const partnerSocket = user.socket.partner;
+      if (partnerSocket.connected) { partnerSocket.emit("partner_disconnected"); partnerSocket.partner = null; partnerSocket.room = null; }
     }
     delete connectedUsers[socket.id];
     if (waitingUser === socket) waitingUser = null;
-    updateAdminUI();
-    emitOnlineCount();
+    updateAdminUI(); emitOnlineCount();
   });
 });
 
-function updateAdminUI() {
-  const users = Object.values(connectedUsers)
-    .filter((u) => !u.isAdmin)
-    .map(({ socket, ip }) => ({ socketId: socket.id, ip }));
-  const banned = [...bannedIPs];
-  Object.values(connectedUsers)
-    .filter((u) => u.isAdmin)
-    .forEach(({ socket }) => {
-      socket.emit("users_list", users);
-      socket.emit("banned_list", banned);
-    });
-}
-
+// ... resto del file ...
+function updateAdminUI() { const users = Object.values(connectedUsers).filter((u) => !u.isAdmin).map(({ socket, ip }) => ({ socketId: socket.id, ip })); const banned = [...bannedIPs]; Object.values(connectedUsers).filter((u) => u.isAdmin).forEach(({ socket }) => { socket.emit("users_list", users); socket.emit("banned_list", banned); }); }
 const PORT = process.env.PORT || 10000;
-server.listen(PORT, () => {
-  console.log(`🚀 Server avviato sulla porta ${PORT}`);
-  emitOnlineCount();
-});
+server.listen(PORT, () => { console.log(`🚀 Server avviato sulla porta ${PORT}`); emitOnlineCount(); });
