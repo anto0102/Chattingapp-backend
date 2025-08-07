@@ -7,6 +7,7 @@ const basicAuth = require("express-basic-auth");
 const fs = require("fs");
 const path = require("path");
 const geoip = require('geoip-lite');
+const axios = require('axios'); // <--- AGGIUNTO: Importazione di axios
 
 const app = express();
 app.use(cors());
@@ -32,6 +33,24 @@ app.use("/adminreport", basicAuth({ users: { admin: "changeme" }, challenge: tru
 app.get("/admin", (req, res) => res.sendFile(path.join(__dirname, "admin.html")));
 app.get("/adminreport", (req, res) => res.sendFile(path.join(__dirname, "adminreport.html")));
 app.get("/reports.json", (req, res) => res.json(reports));
+
+
+// AGGIUNTO: Endpoint proxy per la ricerca delle canzoni
+app.get('/api/search-songs', async (req, res) => {
+    const query = req.query.q;
+    if (!query) {
+        return res.status(400).json({ error: "Parametro 'q' mancante." });
+    }
+
+    try {
+        const deezerResponse = await axios.get(`https://api.deezer.com/search?q=${encodeURIComponent(query)}`);
+        res.json(deezerResponse.data);
+    } catch (error) {
+        console.error('Errore nel proxy Deezer:', error.message);
+        res.status(500).json({ error: "Errore nel caricamento dei risultati dall'API Deezer." });
+    }
+});
+
 
 function getClientIP(socket) {
   const forwarded = socket.handshake.headers["x-forwarded-for"];
@@ -59,7 +78,7 @@ io.use((socket, next) => {
 io.on("connection", (socket) => {
   const ip = getClientIP(socket);
   const isAdmin = socket.handshake.query?.admin === "1";
-  
+  
   connectedUsers[socket.id] = { socket, ip, isAdmin, profile: {} };
   console.log(`${isAdmin ? "🛡️ Admin" : "✅ Utente"} connesso: ${socket.id} (${ip})`);
   emitOnlineCount();
@@ -80,21 +99,21 @@ io.on("connection", (socket) => {
         const user2_geo = geoip.lookup(user2_ip);
         const user1_country_code = user1_geo ? user1_geo.country : 'Sconosciuto';
         const user2_country_code = user2_geo ? user2_geo.country : 'Sconosciuto';
-        
+        
         // Prepariamo i profili da inviare in base alla visibilità
         const user1_profile_to_send = connectedUsers[socket.id].profile.showProfile ? connectedUsers[socket.id].profile : { showProfile: false };
         const user2_profile_to_send = connectedUsers[waitingUser.id].profile.showProfile ? connectedUsers[waitingUser.id].profile : { showProfile: false };
 
         // Inviamo a ciascun utente l'avatar e il profilo del partner
-        socket.emit("match", { 
-          partnerIp: user2_ip, 
-          partnerCountry: user2_country_code, 
+        socket.emit("match", { 
+          partnerIp: user2_ip, 
+          partnerCountry: user2_country_code, 
           partnerAvatar: user2_profile_to_send.avatarUrl,
           partnerProfile: user2_profile_to_send
         });
-        waitingUser.emit("match", { 
-          partnerIp: user1_ip, 
-          partnerCountry: user1_country_code, 
+        waitingUser.emit("match", { 
+          partnerIp: user1_ip, 
+          partnerCountry: user1_country_code, 
           partnerAvatar: user1_profile_to_send.avatarUrl,
           partnerProfile: user1_profile_to_send
         });
@@ -118,7 +137,7 @@ io.on("connection", (socket) => {
             connectedUsers[socket.id].profile = newProfile;
             console.log(`Profilo aggiornato per ${socket.id}`);
             if (socket.partner && socket.partner.connected) {
-                const myProfile_to_send = connectedUsers[socket.id].profile.showProfile ? connectedUsers[socket.id].profile : { showProfile: false, avatarUrl: connectedUsers[socket.id].profile.avatarUrl };
+                const myProfile_to_send = connectedUsers[socket.id].profile.showProfile ? connectedUsers[socket.id].profile : { showProfile: false, avatarUrl: connectedUsers[socket.id].profile.avatarUrl };
                 socket.partner.emit('update_profile_from_partner', myProfile_to_send);
             }
         }
@@ -128,7 +147,7 @@ io.on("connection", (socket) => {
         if (socket.partner && socket.partner.connected) {
             const senderAvatar = connectedUsers[socket.id]?.profile?.avatarUrl;
             const messageObject = { id: uuidv4(), text: msgText, senderId: socket.id, avatarUrl: senderAvatar, timestamp: new Date(), reactions: {} };
-            
+            
             if (socket.room && activeChats[socket.room]) {
                 activeChats[socket.room].messages.push(messageObject);
             }
@@ -139,13 +158,13 @@ io.on("connection", (socket) => {
             socket.partner = null;
         }
     });
-    
+    
     socket.on('add_reaction', ({ messageId, emoji }) => {
         const room = socket.room;
         if (!room || !activeChats[room] || !socket.partner) return;
         const message = activeChats[room].messages.find(m => m.id === messageId);
         if (!message) return;
-        
+        
         for (const existingEmoji in message.reactions) {
             if (existingEmoji !== emoji && message.reactions[existingEmoji].has(socket.id)) {
                 message.reactions[existingEmoji].delete(socket.id);
