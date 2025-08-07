@@ -6,7 +6,7 @@ const cors = require("cors");
 const basicAuth = require("express-basic-auth");
 const fs = require("fs");
 const path = require("path");
-const geoip = require('geoip-lite'); // MODIFICA: Aggiunta libreria GeoIP
+const geoip = require('geoip-lite');
 
 const app = express();
 app.use(cors());
@@ -59,29 +59,40 @@ io.use((socket, next) => {
 io.on("connection", (socket) => {
   const ip = getClientIP(socket);
   const isAdmin = socket.handshake.query?.admin === "1";
-  connectedUsers[socket.id] = { socket, ip, isAdmin };
+  // NUOVA LOGICA AVATAR: Aggiungiamo il campo avatarUrl all'oggetto utente
+  connectedUsers[socket.id] = { socket, ip, isAdmin, avatarUrl: null };
   console.log(`${isAdmin ? "🛡️ Admin" : "✅ Utente"} connesso: ${socket.id} (${ip})`);
   emitOnlineCount();
   updateAdminUI();
 
   if (!isAdmin) {
-    socket.on("start_chat", () => {
+    // NUOVA LOGICA AVATAR: Riceviamo l'avatar scelto dal client
+    socket.on("start_chat", (data) => {
+      // Memorizziamo l'avatar scelto dall'utente
+      if (connectedUsers[socket.id]) {
+          connectedUsers[socket.id].avatarUrl = data.avatarUrl;
+          socket.avatarUrl = data.avatarUrl; // Lo aggiungiamo anche all'oggetto socket per comodità
+      }
+
       if (waitingUser && waitingUser.connected) {
         const room = `chat_${socket.id}_${waitingUser.id}`;
         socket.join(room);
         waitingUser.join(room);
 
-        // MODIFICA: Troviamo il paese di entrambi gli utenti
         const user1_ip = getClientIP(socket);
         const user2_ip = getClientIP(waitingUser);
         const user1_geo = geoip.lookup(user1_ip);
         const user2_geo = geoip.lookup(user2_ip);
         const user1_country_code = user1_geo ? user1_geo.country : 'Sconosciuto';
         const user2_country_code = user2_geo ? user2_geo.country : 'Sconosciuto';
+        
+        // NUOVA LOGICA AVATAR: Recuperiamo gli avatar di entrambi gli utenti
+        const user1_avatar = connectedUsers[socket.id]?.avatarUrl;
+        const user2_avatar = connectedUsers[waitingUser.id]?.avatarUrl;
 
-        // Inviamo a ciascun utente il paese del proprio partner
-        socket.emit("match", { partnerIp: user2_ip, partnerCountry: user2_country_code });
-        waitingUser.emit("match", { partnerIp: user1_ip, partnerCountry: user1_country_code });
+        // NUOVA LOGICA AVATAR: Inviamo a ciascun utente l'avatar del partner
+        socket.emit("match", { partnerIp: user2_ip, partnerCountry: user2_country_code, partnerAvatar: user2_avatar });
+        waitingUser.emit("match", { partnerIp: user1_ip, partnerCountry: user1_country_code, partnerAvatar: user1_avatar });
 
         socket.partner = waitingUser;
         waitingUser.partner = socket;
@@ -97,12 +108,32 @@ io.on("connection", (socket) => {
       }
     });
 
+    // NUOVA LOGICA AVATAR: Gestiamo l'aggiornamento dell'avatar in tempo reale
+    socket.on('update_avatar', (data) => {
+        if (connectedUsers[socket.id]) {
+            connectedUsers[socket.id].avatarUrl = data.avatarUrl;
+            socket.avatarUrl = data.avatarUrl; // Aggiorniamo anche qui
+            console.log(`Avatar aggiornato per ${socket.id}`);
+
+            // Se l'utente è in una chat, notifichiamo il partner del cambiamento
+            if (socket.partner && socket.partner.connected) {
+                socket.partner.emit('partner_avatar_updated', { avatarUrl: data.avatarUrl });
+            }
+        }
+    });
+
     socket.on("message", (msgText) => {
         if (socket.partner && socket.partner.connected) {
-            const messageObject = { id: uuidv4(), text: msgText, senderId: socket.id, timestamp: new Date(), reactions: {} };
+            // NUOVA LOGICA AVATAR: Recuperiamo l'avatar del mittente da usare nel messaggio
+            const senderAvatar = connectedUsers[socket.id]?.avatarUrl;
+            
+            // NUOVA LOGICA AVATAR: Includiamo l'avatar nell'oggetto del messaggio
+            const messageObject = { id: uuidv4(), text: msgText, senderId: socket.id, avatarUrl: senderAvatar, timestamp: new Date(), reactions: {} };
+            
             if (socket.room && activeChats[socket.room]) {
                 activeChats[socket.room].messages.push(messageObject);
             }
+            // Invia il messaggio a entrambi gli utenti nella stanza
             io.to(socket.id).to(socket.partner.id).emit("new_message", messageObject);
             console.log(`Messaggio [${messageObject.id}] da ${socket.id}`);
         } else {
@@ -116,11 +147,14 @@ io.on("connection", (socket) => {
         if (!room || !activeChats[room] || !socket.partner) return;
         const message = activeChats[room].messages.find(m => m.id === messageId);
         if (!message) return;
+        
+        // Logica per gestire una singola reazione per utente
         for (const existingEmoji in message.reactions) {
             if (existingEmoji !== emoji && message.reactions[existingEmoji].has(socket.id)) {
                 message.reactions[existingEmoji].delete(socket.id);
             }
         }
+
         if (!message.reactions[emoji]) {
             message.reactions[emoji] = new Set();
         }
@@ -158,6 +192,7 @@ io.on("connection", (socket) => {
     emitOnlineCount();
   });
 });
+
 function updateAdminUI() { const users = Object.values(connectedUsers).filter((u) => !u.isAdmin).map(({ socket, ip }) => ({ socketId: socket.id, ip })); const banned = [...bannedIPs]; Object.values(connectedUsers).filter((u) => u.isAdmin).forEach(({ socket }) => { socket.emit("users_list", users); socket.emit("banned_list", banned); }); }
 const PORT = process.env.PORT || 10000;
 server.listen(PORT, () => { console.log(`🚀 Server avviato sulla porta ${PORT}`); emitOnlineCount(); });
