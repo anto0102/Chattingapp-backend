@@ -45,7 +45,7 @@ function getClientIP(socket) {
 
 let connectedUsers = {};
 let waitingUser = null;
-let activeChats = {}; // "Memoria" per le chat attive e i loro messaggi
+let activeChats = {};
 
 function emitOnlineCount() {
   const currentOnlineUsers = Object.values(connectedUsers).filter(u => !u.isAdmin).length;
@@ -102,7 +102,7 @@ io.on("connection", (socket) => {
         socket.partner = null;
       }
     });
-
+    
     socket.on('add_reaction', ({ messageId, emoji }) => {
         const room = socket.room;
         if (!room || !activeChats[room] || !socket.partner) return;
@@ -110,6 +110,14 @@ io.on("connection", (socket) => {
         const message = activeChats[room].messages.find(m => m.id === messageId);
         if (!message) return;
 
+        // MODIFICA: Rimuovi le reazioni precedenti dello stesso utente
+        for (const existingEmoji in message.reactions) {
+            if (existingEmoji !== emoji && message.reactions[existingEmoji].has(socket.id)) {
+                message.reactions[existingEmoji].delete(socket.id);
+            }
+        }
+
+        // La logica di "toggle" per l'emoji attuale rimane la stessa
         if (!message.reactions[emoji]) {
             message.reactions[emoji] = new Set();
         }
@@ -135,7 +143,7 @@ io.on("connection", (socket) => {
     socket.on("stop_typing", () => { if (socket.partner && socket.partner.connected) { socket.partner.emit("stop_typing"); } });
 
     socket.on("disconnect_chat", () => { 
-        if (socket.room) {
+        if(socket.room) {
             delete activeChats[socket.room];
             socket.room = null;
         }
@@ -153,13 +161,11 @@ io.on("connection", (socket) => {
       const report = { reporterIp: ip, reportedIp: partnerIp, timestamp: new Date().toISOString(), chatLog };
       reports.push(report);
       saveReports();
-      console.log(`📣 Segnalazione ricevuta da ${ip} contro ${partnerIp}`);
       const reportedSocket = Object.values(connectedUsers).find((u) => !u.isAdmin && u.ip === partnerIp)?.socket;
-      if (reportedSocket) { reportedSocket.emit("banned"); reportedSocket.disconnect(true); console.log(`🚨 Utente segnalato disconnesso: ${partnerIp}`); }
+      if (reportedSocket) { reportedSocket.emit("banned"); reportedSocket.disconnect(true); }
       if (socket.partner) { socket.partner.emit("partner_disconnected"); socket.partner.partner = null; socket.partner = null; }
       if (waitingUser === socket) waitingUser = null;
       socket.disconnect(true);
-      console.log(` REPORTER DISCONNECTED ${ip}`);
     });
   }
 
@@ -168,7 +174,6 @@ io.on("connection", (socket) => {
     if (!bannedIPs.has(targetIP)) {
       bannedIPs.add(targetIP);
       saveBannedIPs();
-      console.log(`⛔ IP bannato: ${targetIP}`);
       Object.values(connectedUsers).forEach(({ socket: s, ip }) => { if (ip === targetIP) { s.emit("banned"); s.disconnect(true); } });
       updateAdminUI();
       emitOnlineCount();
@@ -180,7 +185,6 @@ io.on("connection", (socket) => {
     if (bannedIPs.has(ipToUnban)) {
       bannedIPs.delete(ipToUnban);
       saveBannedIPs();
-      console.log(`✅ IP sbannato: ${ipToUnban}`);
       updateAdminUI();
     }
   });
