@@ -60,7 +60,6 @@ io.on("connection", (socket) => {
   const ip = getClientIP(socket);
   const isAdmin = socket.handshake.query?.admin === "1";
   
-  // Memorizziamo l'oggetto completo del profilo
   connectedUsers[socket.id] = { socket, ip, isAdmin, profile: {} };
   console.log(`${isAdmin ? "🛡️ Admin" : "✅ Utente"} connesso: ${socket.id} (${ip})`);
   emitOnlineCount();
@@ -68,7 +67,6 @@ io.on("connection", (socket) => {
 
   if (!isAdmin) {
     socket.on("start_chat", (myProfile) => {
-      // Memorizziamo il profilo dell'utente appena connesso
       connectedUsers[socket.id].profile = myProfile;
 
       if (waitingUser && waitingUser.connected) {
@@ -83,9 +81,9 @@ io.on("connection", (socket) => {
         const user1_country_code = user1_geo ? user1_geo.country : 'Sconosciuto';
         const user2_country_code = user2_geo ? user2_geo.country : 'Sconosciuto';
         
-        // Prepariamo i profili da inviare
-        const user1_profile_to_send = connectedUsers[socket.id].profile;
-        const user2_profile_to_send = connectedUsers[waitingUser.id].profile;
+        // Prepariamo i profili da inviare in base alla visibilità
+        const user1_profile_to_send = connectedUsers[socket.id].profile.showProfile ? connectedUsers[socket.id].profile : { showProfile: false };
+        const user2_profile_to_send = connectedUsers[waitingUser.id].profile.showProfile ? connectedUsers[waitingUser.id].profile : { showProfile: false };
 
         // Inviamo a ciascun utente l'avatar e il profilo del partner
         socket.emit("match", { 
@@ -115,14 +113,13 @@ io.on("connection", (socket) => {
       }
     });
 
-    // Gestiamo l'aggiornamento del profilo
     socket.on('update_profile', (newProfile) => {
         if (connectedUsers[socket.id]) {
             connectedUsers[socket.id].profile = newProfile;
             console.log(`Profilo aggiornato per ${socket.id}`);
-            // Se l'utente è in una chat, notifichiamo il partner del cambiamento
             if (socket.partner && socket.partner.connected) {
-                socket.partner.emit('update_profile_from_partner', newProfile);
+                const myProfile_to_send = connectedUsers[socket.id].profile.showProfile ? connectedUsers[socket.id].profile : { showProfile: false, avatarUrl: connectedUsers[socket.id].profile.avatarUrl };
+                socket.partner.emit('update_profile_from_partner', myProfile_to_send);
             }
         }
     });
