@@ -1,7 +1,6 @@
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
-const { v4: uuidv4 } = require('uuid'); // MODIFICA: Importiamo la libreria per gli ID
 const cors = require("cors");
 const basicAuth = require("express-basic-auth");
 const fs = require("fs");
@@ -149,23 +148,9 @@ io.on("connection", (socket) => {
       }
     });
 
-    // MODIFICA: L'evento 'message' ora crea un oggetto con ID
-    socket.on("message", (msgText) => {
+    socket.on("message", (msg) => {
       if (socket.partner && socket.partner.connected) {
-        // 1. Crea un oggetto-messaggio con un ID unico
-        const messageObject = {
-          id: uuidv4(),
-          text: msgText,
-          senderId: socket.id,
-          timestamp: new Date(),
-          reactions: {}
-        };
-
-        // 2. Invia l'oggetto-messaggio a ENTRAMBI gli utenti nella chat
-        io.to(socket.id).to(socket.partner.id).emit("new_message", messageObject);
-        
-        console.log(`Messaggio [${messageObject.id}] da ${socket.id} al partner ${socket.partner.id}`);
-
+        socket.partner.emit("message", msg);
       } else {
         socket.emit("partner_disconnected");
         socket.partner = null;
@@ -258,4 +243,49 @@ io.on("connection", (socket) => {
   });
 
   socket.on("unban_ip", (ipToUnban) => {
-    if (!
+    if (!connectedUsers[socket.id]?.isAdmin) return;
+
+    if (bannedIPs.has(ipToUnban)) {
+      bannedIPs.delete(ipToUnban);
+      saveBannedIPs();
+      console.log(`✅ IP sbannato: ${ipToUnban}`);
+      updateAdminUI();
+    }
+  });
+
+  socket.on("disconnect", () => {
+    if (connectedUsers[socket.id] && connectedUsers[socket.id].socket.partner) {
+      const partnerSocket = connectedUsers[socket.id].socket.partner;
+      if (partnerSocket.connected) {
+        partnerSocket.emit("partner_disconnected");
+        partnerSocket.partner = null;
+      }
+    }
+
+    delete connectedUsers[socket.id];
+    if (waitingUser === socket) waitingUser = null;
+    updateAdminUI();
+    emitOnlineCount();
+  });
+});
+
+function updateAdminUI() {
+  const users = Object.values(connectedUsers)
+    .filter((u) => !u.isAdmin)
+    .map(({ socket, ip }) => ({ socketId: socket.id, ip }));
+
+  const banned = [...bannedIPs];
+
+  Object.values(connectedUsers)
+    .filter((u) => u.isAdmin)
+    .forEach(({ socket }) => {
+      socket.emit("users_list", users);
+      socket.emit("banned_list", banned);
+    });
+}
+
+const PORT = process.env.PORT || 10000;
+server.listen(PORT, () => {
+  console.log(`🚀 Server avviato sulla porta ${PORT}`);
+  emitOnlineCount();
+});
