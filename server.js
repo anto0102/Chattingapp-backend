@@ -1,6 +1,7 @@
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
+const { v4: uuidv4 } = require('uuid'); // MODIFICA 1: Importiamo la libreria per gli ID
 const cors = require("cors");
 const basicAuth = require("express-basic-auth");
 const fs = require("fs");
@@ -135,7 +136,6 @@ io.on("connection", (socket) => {
         socket.join(room);
         waitingUser.join(room);
 
-        // Modifica: Invia l'IP del partner
         socket.emit("match", { partnerIp: getClientIP(waitingUser) });
         waitingUser.emit("match", { partnerIp: getClientIP(socket) });
 
@@ -148,9 +148,23 @@ io.on("connection", (socket) => {
       }
     });
 
-    socket.on("message", (msg) => {
+    // MODIFICA 2: L'evento 'message' ora crea un oggetto con ID
+    socket.on("message", (msgText) => {
       if (socket.partner && socket.partner.connected) {
-        socket.partner.emit("message", msg);
+        // 1. Crea l'oggetto-messaggio
+        const messageObject = {
+          id: uuidv4(), // Genera un ID unico
+          text: msgText,
+          senderId: socket.id,
+          timestamp: new Date(),
+          reactions: {} // Pronto per le reazioni
+        };
+
+        // 2. Invia l'oggetto a entrambi gli utenti
+        io.to(socket.id).to(socket.partner.id).emit("new_message", messageObject);
+        
+        console.log(`Messaggio [${messageObject.id}] da ${socket.id} al partner ${socket.partner.id}`);
+
       } else {
         socket.emit("partner_disconnected");
         socket.partner = null;
@@ -163,7 +177,6 @@ io.on("connection", (socket) => {
       }
     });
     
-    // ⬇️ MODIFICA: Nuovi gestori per gli eventi di scrittura
     socket.on("typing", () => {
       if (socket.partner && socket.partner.connected) {
         socket.partner.emit("typing");
@@ -175,7 +188,6 @@ io.on("connection", (socket) => {
         socket.partner.emit("stop_typing");
       }
     });
-    // ⬆️ FINE MODIFICA
 
     socket.on("disconnect_chat", () => {
       if (socket.partner) {
@@ -186,7 +198,6 @@ io.on("connection", (socket) => {
       if (waitingUser === socket) waitingUser = null;
     });
 
-    // Modifica: Riceve l'IP per la segnalazione
     socket.on("report_user", ({ partnerIp, chatLog }) => {
       if (!partnerIp || !chatLog) return;
       const report = {
@@ -199,7 +210,6 @@ io.on("connection", (socket) => {
       saveReports();
       console.log(`📣 Segnalazione ricevuta da ${ip} contro ${partnerIp}`);
 
-      // Cerca e disconnette l'utente segnalato tramite IP
       const reportedSocket = Object.values(connectedUsers).find(
         (u) => !u.isAdmin && u.ip === partnerIp
       )?.socket;
@@ -210,7 +220,6 @@ io.on("connection", (socket) => {
         console.log(`🚨 Utente segnalato disconnesso: ${partnerIp}`);
       }
 
-      // Disconnette il reporter
       if (socket.partner) {
         socket.partner.emit("partner_disconnected");
         socket.partner.partner = null;
@@ -224,19 +233,16 @@ io.on("connection", (socket) => {
 
   socket.on("ban_ip", (targetIP) => {
     if (!connectedUsers[socket.id]?.isAdmin) return;
-
     if (!bannedIPs.has(targetIP)) {
       bannedIPs.add(targetIP);
       saveBannedIPs();
       console.log(`⛔ IP bannato: ${targetIP}`);
-
       Object.values(connectedUsers).forEach(({ socket: s, ip }) => {
         if (ip === targetIP) {
           s.emit("banned");
           s.disconnect(true);
         }
       });
-
       updateAdminUI();
       emitOnlineCount();
     }
@@ -244,7 +250,6 @@ io.on("connection", (socket) => {
 
   socket.on("unban_ip", (ipToUnban) => {
     if (!connectedUsers[socket.id]?.isAdmin) return;
-
     if (bannedIPs.has(ipToUnban)) {
       bannedIPs.delete(ipToUnban);
       saveBannedIPs();
@@ -261,7 +266,6 @@ io.on("connection", (socket) => {
         partnerSocket.partner = null;
       }
     }
-
     delete connectedUsers[socket.id];
     if (waitingUser === socket) waitingUser = null;
     updateAdminUI();
@@ -273,9 +277,7 @@ function updateAdminUI() {
   const users = Object.values(connectedUsers)
     .filter((u) => !u.isAdmin)
     .map(({ socket, ip }) => ({ socketId: socket.id, ip }));
-
   const banned = [...bannedIPs];
-
   Object.values(connectedUsers)
     .filter((u) => u.isAdmin)
     .forEach(({ socket }) => {
